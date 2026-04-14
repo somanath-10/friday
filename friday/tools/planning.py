@@ -155,13 +155,17 @@ def register(mcp):
         }, indent=2)
 
     @mcp.tool()
-    async def track_plan_in_workspace(plan_json: str, workspace_path: str = "workspace/current_plan.md") -> str:
+    async def track_plan_in_workspace(plan_json: str, workspace_path: str = None) -> str:
         """
         Takes the JSON output from decompose_task and writes it as a Markdown checklist to the workspace.
         This provides a tangible, persistent tracker for long-running or complex tasks F.R.I.D.A.Y handles.
         """
         import os
         try:
+            if workspace_path is None:
+                base_dir = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
+                workspace_path = os.path.join(base_dir, "current_plan.md")
+                
             plan_data = json.loads(plan_json)
             steps = plan_data.get("decomposition", [])
             

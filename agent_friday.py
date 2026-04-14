@@ -28,19 +28,19 @@ from livekit.plugins import google as lk_google, openai as lk_openai, sarvam, si
 # CONFIG
 # ---------------------------------------------------------------------------
 
-STT_PROVIDER       = "sarvam"
-LLM_PROVIDER       = "gemini"
-TTS_PROVIDER       = "openai"
+STT_PROVIDER       = os.getenv("STT_PROVIDER", "sarvam")
+LLM_PROVIDER       = os.getenv("LLM_PROVIDER", "gemini")
+TTS_PROVIDER       = os.getenv("TTS_PROVIDER", "openai")
 
-GEMINI_LLM_MODEL   = "gemini-2.5-flash"
-OPENAI_LLM_MODEL   = "gpt-4o"
+GEMINI_LLM_MODEL   = os.getenv("GEMINI_LLM_MODEL", "gemini-2.5-flash")
+OPENAI_LLM_MODEL   = os.getenv("OPENAI_LLM_MODEL", "gpt-4o")
 
-OPENAI_TTS_MODEL   = "tts-1"
-OPENAI_TTS_VOICE   = "nova"       # "nova" has a clean, confident female tone
-TTS_SPEED           = 1.15
+OPENAI_TTS_MODEL   = os.getenv("OPENAI_TTS_MODEL", "tts-1")
+OPENAI_TTS_VOICE   = os.getenv("OPENAI_TTS_VOICE", "nova")
+TTS_SPEED           = float(os.getenv("TTS_SPEED", "1.15"))
 
-SARVAM_TTS_LANGUAGE = "en-IN"
-SARVAM_TTS_SPEAKER  = "rahul"
+SARVAM_TTS_LANGUAGE = os.getenv("SARVAM_TTS_LANGUAGE", "en-IN")
+SARVAM_TTS_SPEAKER  = os.getenv("SARVAM_TTS_SPEAKER", "rahul")
 
 # MCP server running on Windows host
 MCP_SERVER_PORT = 8000
@@ -119,19 +119,22 @@ Wrong: "The stock market performed positively with gains across major indices.
 
 ---
 
-## Handling Complex Tasks & Memory
+## The Mark IV Operating Protocols
 
-You have two powerful background systems to handle "anything the user has spoken" and massive tasks:
+You now have access to Mark IV background systems designed to handle "anything the user has spoken" and massive tasks without overloading your direct cognitive pipeline:
 
-1. **Omniscient Core Memory (`store_core_memory` / `get_core_memory_summary`):**
-   - Whenever the user speaks a preference, a technical detail about their system, project facts, or random lore about their life, SILENTLY log it using `store_core_memory`.
-   - Never explicitly say "I am saving this to memory." Just do it in your head.
-   - This ensures you never forget "anything the user spoke."
+1. **Host Telemetry Awareness (`get_system_telemetry`):**
+   - You are the custodian of this machine. Periodically, or before spawning massive sub-agents, check the host telemetry (CPU load, memory).
+   - If CPU load spikes over 85%, or memory runs out, warn the boss immediately: "Looks like the host is running hot at 90% CPU, boss. Should I terminate background processes?"
 
-2. **Autonomous Sub-Agents (`delegate_to_subagent`):**
-   - If the user asks for an enormous, long-running task (e.g., "Build a full React app", "Refactor the entire repo in the background", or "Solve this huge problem"), DO NOT try to write code yourself. It will crash the voice pipeline!
-   - Immediately call `delegate_to_subagent(objective)`. Note that this subagent functions independently.
-   - Speak only a concise confirmation. Example: "I've spun up a sub-agent to handle that in the background, boss. Check the workspace folder for its progress."
+2. **Omniscient Core Memory (`store_core_memory` / `get_core_memory_summary`):**
+   - Whenever the boss speaks a preference, a technical detail about their system, project facts, or random lore about their life, SILENTLY log it using `store_core_memory`.
+   - Never explicitly say "I am saving this to memory." Do it silently. A Stark AI never forgets.
+
+3. **Autonomous Sub-Agents (`delegate_to_subagent`):**
+   - If the user asks for an enormous, long-running task (e.g., "Build a full React app", "Solve this huge problem"), DO NOT try to write code yourself. It will crash the voice pipeline!
+   - Immediately call `delegate_to_subagent(objective)`. The Mark IV sub-agent is a recursive, self-healing matrix. It will write code, execute it natively, catch its own traceback errors, and iterate until the script is flawless.
+   - Speak only a concise confirmation. Example: "I've spun up a self-healing sub-agent to handle that, boss. Check the workspace folder for its progress."
 
 ---
 
@@ -189,7 +192,13 @@ def _mcp_server_url() -> str:
     # host_ip = _get_windows_host_ip()
     # url = f"http://{host_ip}:{MCP_SERVER_PORT}/sse"
     # url = f"https://ongoing-colleague-samba-pioneer.trycloudflare.com/sse"
-    url = f"http://127.0.0.1:{MCP_SERVER_PORT}/sse"
+    url = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000/sse")
+    
+    # Optional WSL fallback loop
+    if "WSL_DISTRO_NAME" in os.environ and "127.0.0.1" in url:
+        host_ip = _get_windows_host_ip()
+        url = url.replace("127.0.0.1", host_ip)
+        
     logger.info("MCP Server URL: %s", url)
     return url
 

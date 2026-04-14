@@ -11,8 +11,9 @@ from typing import Dict, Any, Optional, List
 
 class MemoryManager:
     def __init__(self):
-        self.memory_dir = Path.home() / ".friday_memory"
-        self.memory_dir.mkdir(exist_ok=True)
+        memory_path = os.environ.get("FRIDAY_MEMORY_DIR", str(Path.home() / ".friday_memory"))
+        self.memory_dir = Path(memory_path)
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.user_profile_file = self.memory_dir / "user_profile.json"
         self.conversation_file = self.memory_dir / "conversation_history.json"
         self.context_file = self.memory_dir / "current_context.json"
