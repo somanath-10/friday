@@ -157,7 +157,3 @@ The MCP server will pick it up on next start.
 - **[uv](https://github.com/astral-sh/uv)** — fast Python package manager
 
 ---
-
-## License
-
-MIT
