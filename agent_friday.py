@@ -14,7 +14,6 @@ Run:
 
 import os
 import logging
-import subprocess
 
 from dotenv import load_dotenv
 from livekit.agents import JobContext, WorkerOptions, cli
@@ -222,50 +221,8 @@ logger = logging.getLogger("friday-agent")
 logger.setLevel(logging.INFO)
 
 
-# ---------------------------------------------------------------------------
-# Resolve Windows host IP from WSL
-# ---------------------------------------------------------------------------
-
-def _get_windows_host_ip() -> str:
-    """Get the Windows host IP by looking at the default network route."""
-    try:
-        # 'ip route' is the most reliable way to find the 'default' gateway
-        # which is always the Windows host in WSL.
-        cmd = "ip route show default | awk '{print $3}'"
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=2
-        )
-        ip = result.stdout.strip()
-        if ip:
-            logger.info("Resolved Windows host IP via gateway: %s", ip)
-            return ip
-    except Exception as exc:
-        logger.warning("Gateway resolution failed: %s. Trying fallback...", exc)
-
-    # Fallback to your original resolv.conf logic if 'ip route' fails
-    try:
-        with open("/etc/resolv.conf", "r") as f:
-            for line in f:
-                if "nameserver" in line:
-                    ip = line.split()[1]
-                    logger.info("Resolved Windows host IP via nameserver: %s", ip)
-                    return ip
-    except Exception:
-        pass
-
-    return "127.0.0.1"
-
 def _mcp_server_url() -> str:
-    # host_ip = _get_windows_host_ip()
-    # url = f"http://{host_ip}:{MCP_SERVER_PORT}/sse"
-    # url = f"https://ongoing-colleague-samba-pioneer.trycloudflare.com/sse"
-    url = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000/sse")
-    
-    # Optional WSL fallback loop
-    if "WSL_DISTRO_NAME" in os.environ and "127.0.0.1" in url:
-        host_ip = _get_windows_host_ip()
-        url = url.replace("127.0.0.1", host_ip)
-        
+    url = os.getenv("MCP_SERVER_URL", f"http://127.0.0.1:{MCP_SERVER_PORT}/sse")
     logger.info("MCP Server URL: %s", url)
     return url
 
