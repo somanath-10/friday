@@ -75,6 +75,19 @@ def main():
     model = os.environ.get("GEMINI_LLM_MODEL", "gemini-2.5-flash")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
+    max_iterations = int(os.environ.get("MAX_SUBAGENT_ITERATIONS", "5"))
+    
+    # Allow dynamic override of system prompts via environment variables if needed
+    custom_coding_prompt = os.environ.get("SUBAGENT_CODING_PROMPT")
+    custom_research_prompt = os.environ.get("SUBAGENT_RESEARCH_PROMPT")
+    custom_writing_prompt = os.environ.get("SUBAGENT_WRITING_PROMPT")
+    custom_auto_prompt = os.environ.get("SUBAGENT_AUTO_PROMPT")
+
+    if custom_coding_prompt: TASK_SYSTEM_PROMPTS["coding"] = custom_coding_prompt
+    if custom_research_prompt: TASK_SYSTEM_PROMPTS["research"] = custom_research_prompt
+    if custom_writing_prompt: TASK_SYSTEM_PROMPTS["writing"] = custom_writing_prompt
+    if custom_auto_prompt: TASK_SYSTEM_PROMPTS["auto"] = custom_auto_prompt
+
     system_prompt = TASK_SYSTEM_PROMPTS[task_type]
 
     conversation_history = [
@@ -83,8 +96,6 @@ def main():
             "parts": [{"text": f"{system_prompt}\n\nObjective: {objective}"}]
         }
     ]
-
-    max_iterations = int(os.environ.get("MAX_SUBAGENT_ITERATIONS", "5"))
 
     for attempt in range(1, max_iterations + 1):
         with open(log_file, "a", encoding="utf-8") as f:

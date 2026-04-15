@@ -1,11 +1,14 @@
 """
 System tools — time, environment info, process management, and host telemetry.
+Supports: macOS, Linux, and Windows.
 """
 
 import datetime
 import platform
 import subprocess
 import os
+
+OS = platform.system()  # "Darwin" | "Linux" | "Windows"
 
 
 def register(mcp):
@@ -22,14 +25,14 @@ def register(mcp):
     @mcp.tool()
     def get_system_telemetry() -> dict:
         """
-        [MARK IV UPGRADE] Fetch deep host machine telemetry (CPU load, active memory, storage).
-        Use this to monitor the host health, especially when running heavy background Subagents!
+        Fetch host machine telemetry: CPU load, memory, and storage.
+        Use this to monitor host health, especially before spawning heavy background tasks.
         """
         import shutil
         import multiprocessing
 
         telemetry = {
-            "os": platform.system(),
+            "os": OS,
             "os_version": platform.version(),
             "machine": platform.machine(),
             "python_version": platform.python_version(),
@@ -38,30 +41,55 @@ def register(mcp):
 
         # CPU Load
         try:
-            load1, load5, load15 = os.getloadavg()
-            cpu_load_pct = round((load1 / telemetry["cpu_cores"]) * 100, 2)
-            telemetry["cpu_load_1m_pct"] = cpu_load_pct
-            telemetry["thermal_status"] = "WARNING: HIGH LOAD" if cpu_load_pct > 80 else "NOMINAL"
+            if OS != "Windows":
+                load1, load5, load15 = os.getloadavg()
+                cpu_load_pct = round((load1 / telemetry["cpu_cores"]) * 100, 2)
+                telemetry["cpu_load_1m_pct"] = cpu_load_pct
+                telemetry["thermal_status"] = "WARNING: HIGH LOAD" if cpu_load_pct > 80 else "NOMINAL"
+            else:
+                result = subprocess.run(
+                    ["powershell", "-Command",
+                     "(Get-WmiObject Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average"],
+                    capture_output=True, text=True, timeout=10
+                )
+                cpu_load_pct = float(result.stdout.strip()) if result.returncode == 0 else -1
+                telemetry["cpu_load_pct"] = cpu_load_pct
+                telemetry["thermal_status"] = "WARNING: HIGH LOAD" if cpu_load_pct > 80 else "NOMINAL"
         except Exception:
             telemetry["cpu_load_1m_pct"] = "UNKNOWN"
 
         # Memory
         try:
-            if telemetry["os"] == "Darwin":
-                mem = subprocess.check_output(['sysctl', '-n', 'hw.memsize']).decode().strip()
-                telemetry["total_memory_gb"] = int(mem) // (1024 ** 3)
-                # Get used memory via vm_stat
-                vm = subprocess.check_output(['vm_stat']).decode()
-                pages_free = int(next((l.split(':')[1].strip().rstrip('.') for l in vm.splitlines() if 'Pages free' in l), 0))
-                pages_active = int(next((l.split(':')[1].strip().rstrip('.') for l in vm.splitlines() if 'Pages active' in l), 0))
+            if OS == "Darwin":
+                mem = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
+                total_gb = int(mem) // (1024 ** 3)
+                telemetry["total_memory_gb"] = total_gb
+                vm = subprocess.check_output(["vm_stat"]).decode()
                 page_size = 4096
-                used_gb = round(pages_active * page_size / (1024 ** 3), 2)
-                free_gb = round(pages_free * page_size / (1024 ** 3), 2)
-                telemetry["used_memory_gb"] = used_gb
-                telemetry["free_memory_gb"] = free_gb
-            elif telemetry["os"] == "Linux":
-                total = (os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')) // (1024 ** 3)
-                telemetry["total_memory_gb"] = total
+                pages_active = int(next(
+                    (l.split(":")[1].strip().rstrip(".") for l in vm.splitlines() if "Pages active" in l), 0
+                ))
+                telemetry["used_memory_gb"] = round(pages_active * page_size / (1024 ** 3), 2)
+            elif OS == "Linux":
+                mem_info = open("/proc/meminfo").read()
+                total_kb = int(next(l.split()[1] for l in mem_info.splitlines() if l.startswith("MemTotal")))
+                avail_kb = int(next(l.split()[1] for l in mem_info.splitlines() if l.startswith("MemAvailable")))
+                telemetry["total_memory_gb"] = round(total_kb / (1024 ** 2), 1)
+                telemetry["used_memory_gb"] = round((total_kb - avail_kb) / (1024 ** 2), 1)
+                telemetry["free_memory_gb"] = round(avail_kb / (1024 ** 2), 1)
+            elif OS == "Windows":
+                result = subprocess.run(
+                    ["powershell", "-Command",
+                     "$m=(Get-WmiObject Win32_OperatingSystem); "
+                     "Write-Output \"$($m.TotalVisibleMemorySize) $($m.FreePhysicalMemory)\""],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    parts = result.stdout.strip().split()
+                    total_kb, free_kb = int(parts[0]), int(parts[1])
+                    telemetry["total_memory_gb"] = round(total_kb / (1024 ** 2), 1)
+                    telemetry["free_memory_gb"] = round(free_kb / (1024 ** 2), 1)
+                    telemetry["used_memory_gb"] = round((total_kb - free_kb) / (1024 ** 2), 1)
         except Exception:
             telemetry["total_memory_gb"] = "UNKNOWN"
 
@@ -81,36 +109,31 @@ def register(mcp):
         """
         List the top N running processes sorted by CPU usage.
         Use this when the user asks 'what's eating my CPU?', 'what processes are running?',
-        'what's using my memory?', 'why is my Mac slow?'.
-        top_n: How many top processes to return (default 15).
+        'why is my computer slow?'.
         """
         try:
-            if platform.system() == "Darwin":
+            if OS == "Darwin":
+                result = subprocess.run(["ps", "aux", "-r"], capture_output=True, text=True, timeout=10)
+            elif OS == "Linux":
+                result = subprocess.run(["ps", "aux", "--sort=-%cpu"], capture_output=True, text=True, timeout=10)
+            elif OS == "Windows":
                 result = subprocess.run(
-                    ["ps", "aux", "-r"],
+                    ["powershell", "-Command",
+                     "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15 | "
+                     "Format-Table Name,CPU,WorkingSet -AutoSize | Out-String"],
                     capture_output=True, text=True, timeout=10
                 )
-                if result.returncode != 0:
-                    return f"Could not list processes: {result.stderr.strip()}"
 
-                lines = result.stdout.strip().splitlines()
-                header = lines[0] if lines else ""
-                processes = lines[1:top_n + 1]
+            if result.returncode != 0:
+                return f"Could not list processes: {result.stderr.strip()}"
 
-                output = [f"Top {top_n} processes (sorted by CPU):", header]
-                output.extend(processes)
-                return "\n".join(output)
+            lines = result.stdout.strip().splitlines()
+            if OS != "Windows":
+                output = [f"Top {top_n} processes (by CPU):"] + lines[:top_n + 1]
+            else:
+                output = [f"Top processes (by CPU):"] + lines
 
-            elif platform.system() == "Linux":
-                result = subprocess.run(
-                    ["ps", "aux", "--sort=-%cpu"],
-                    capture_output=True, text=True, timeout=10
-                )
-                lines = result.stdout.strip().splitlines()
-                output = [f"Top {top_n} processes:"] + lines[:top_n + 1]
-                return "\n".join(output)
-
-            return "Process listing not supported on this OS."
+            return "\n".join(output)
         except Exception as e:
             return f"Error listing processes: {str(e)}"
 
@@ -118,31 +141,26 @@ def register(mcp):
     def kill_process(identifier: str) -> str:
         """
         Kill a running process by PID (number) or process name.
-        Use this when the user says 'kill X', 'stop X', 'terminate X', 'close X process'.
-        identifier: Either a numeric PID (e.g. '1234') or a process name (e.g. 'Spotify').
-        WARNING: This immediately terminates the process. Be careful.
+        Use this when the user says 'kill X', 'stop X', 'terminate X'.
+        identifier: Either a numeric PID (e.g. '1234') or a name (e.g. 'Spotify').
         """
         try:
-            if identifier.isdigit():
-                # Kill by PID
-                result = subprocess.run(
-                    ["kill", "-9", identifier],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    return f"Process PID {identifier} terminated."
-                return f"Could not kill PID {identifier}: {result.stderr.strip()}"
-            else:
-                # Kill by name using pkill
-                result = subprocess.run(
-                    ["pkill", "-f", identifier],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    return f"Process matching '{identifier}' terminated."
-                elif result.returncode == 1:
-                    return f"No process found matching '{identifier}'."
-                return f"Error killing '{identifier}': {result.stderr.strip()}"
+            if OS == "Windows":
+                if identifier.isdigit():
+                    result = subprocess.run(["taskkill", "/PID", identifier, "/F"], capture_output=True, text=True, timeout=5)
+                else:
+                    result = subprocess.run(["taskkill", "/IM", f"{identifier}.exe", "/F"], capture_output=True, text=True, timeout=5)
+            else:  # macOS / Linux
+                if identifier.isdigit():
+                    result = subprocess.run(["kill", "-9", identifier], capture_output=True, text=True, timeout=5)
+                else:
+                    result = subprocess.run(["pkill", "-f", identifier], capture_output=True, text=True, timeout=5)
+
+            if result.returncode == 0:
+                return f"Process '{identifier}' terminated."
+            elif result.returncode == 1 and OS != "Windows":
+                return f"No process found matching '{identifier}'."
+            return f"Error killing '{identifier}': {result.stderr.strip()}"
         except Exception as e:
             return f"Error killing process: {str(e)}"
 
@@ -150,11 +168,10 @@ def register(mcp):
     def get_environment_info() -> str:
         """
         Return a summary of the current runtime environment — OS, Python, paths, user.
-        Use this to understand the host system configuration.
         """
         try:
             info = {
-                "os": f"{platform.system()} {platform.release()}",
+                "os": f"{OS} {platform.release()}",
                 "os_version": platform.version(),
                 "machine": platform.machine(),
                 "hostname": platform.node(),
@@ -162,8 +179,7 @@ def register(mcp):
                 "user": os.environ.get("USER", os.environ.get("USERNAME", "unknown")),
                 "home": str(os.path.expanduser("~")),
                 "workspace": os.path.abspath(os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")),
-                "shell": os.environ.get("SHELL", "unknown"),
-                "path_preview": os.environ.get("PATH", "")[:200],
+                "shell": os.environ.get("SHELL", os.environ.get("COMSPEC", "unknown")),
             }
             lines = [f"{k}: {v}" for k, v in info.items()]
             return "=== System Environment ===\n" + "\n".join(lines)
