@@ -3,7 +3,19 @@ Tool registry — imports and registers all tool modules with the MCP server.
 Add new tool modules here as you build them.
 """
 
-from friday.tools import web, system, utils, planning, memory, reasoning, subagent
+from friday.tools import (
+    web,
+    system,
+    utils,
+    planning,
+    memory,
+    reasoning,
+    subagent,
+    apps,        # macOS app launcher, screenshot, clipboard, timers, notifications
+    weather,     # Real-time weather via Open-Meteo (no API key required)
+    files,       # Download files, read PDFs, workspace management
+    translate,   # Language translation via MyMemory (no API key required)
+)
 
 
 def register_all_tools(mcp):
@@ -15,3 +27,7 @@ def register_all_tools(mcp):
     memory.register(mcp)
     reasoning.register(mcp)
     subagent.register(mcp)
+    apps.register(mcp)
+    weather.register(mcp)
+    files.register(mcp)
+    translate.register(mcp)

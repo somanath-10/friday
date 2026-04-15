@@ -1,5 +1,5 @@
 """
-Utility tools — text processing, formatting, calculations, etc.
+Utility tools — text processing, formatting, code execution, file I/O, and process management.
 """
 
 import json
@@ -8,11 +8,14 @@ import tempfile
 import os
 import base64
 import uuid
-import glob
-import fnmatch
+import time
+from pathlib import Path
 
 BACKGROUND_TASKS = {}
 
+# Configurable timeouts (can override via .env)
+PYTHON_EXEC_TIMEOUT = int(os.environ.get("PYTHON_EXEC_TIMEOUT", "120"))
+SHELL_EXEC_TIMEOUT  = int(os.environ.get("SHELL_EXEC_TIMEOUT",  "60"))
 
 
 def register(mcp):
@@ -38,45 +41,72 @@ def register(mcp):
         }
 
     @mcp.tool()
-    def execute_python_code(code: str) -> str:
-        """Execute Python code and return the output."""
+    def execute_python_code(code: str, timeout: int = 0) -> str:
+        """
+        Execute Python code and return the output.
+        Supports any Python code — data analysis, calculations, file processing, web requests, etc.
+        timeout: Optional override in seconds (default uses PYTHON_EXEC_TIMEOUT env var, default 120s).
+        Use this for: calculations, data processing, generating files, running algorithms, etc.
+        """
+        effective_timeout = timeout if timeout > 0 else PYTHON_EXEC_TIMEOUT
         try:
-            # Create a temporary file to execute the code
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-                f.write(code)
+            # Write code to a temp file with proper workspace context
+            workspace = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
+            Path(workspace).mkdir(parents=True, exist_ok=True)
+
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.py', delete=False,
+                dir=workspace, prefix='friday_exec_'
+            ) as f:
+                # Inject workspace path so scripts can create files there easily
+                preamble = (
+                    f"import os, sys\n"
+                    f"WORKSPACE = {repr(os.path.abspath(workspace))}\n"
+                    f"os.makedirs(WORKSPACE, exist_ok=True)\n\n"
+                )
+                f.write(preamble + code)
                 temp_file = f.name
 
-            # Execute the code with a timeout
             result = subprocess.run(
                 ['python3', temp_file],
                 capture_output=True,
                 text=True,
-                timeout=10  # 10 second timeout
+                timeout=effective_timeout,
+                cwd=workspace,
             )
 
-            # Clean up the temporary file
             os.unlink(temp_file)
 
-            # Return the result
             if result.returncode == 0:
                 output = result.stdout.strip()
-                if result.stderr:
-                    output += f"\nWarnings: {result.stderr.strip()}"
+                stderr = result.stderr.strip()
+                if stderr and "warning" in stderr.lower():
+                    output += f"\nWarnings: {stderr}"
                 return output if output else "Code executed successfully with no output."
             else:
-                return f"Error executing code:\n{result.stderr.strip()}"
+                return f"Code execution error (exit {result.returncode}):\n{result.stderr.strip()}"
 
         except subprocess.TimeoutExpired:
-            return "Error: Code execution timed out (10 second limit)."
+            try:
+                os.unlink(temp_file)
+            except Exception:
+                pass
+            return f"Error: Code execution timed out after {effective_timeout}s. Consider using delegate_to_subagent for very long tasks."
         except Exception as e:
             return f"Error executing code: {str(e)}"
 
     @mcp.tool()
     def get_file_contents(file_path: str) -> str:
-        """Get the contents of a file."""
+        """
+        Read and return the full contents of any text file.
+        Use this to read source code, config files, notes, logs, or any text file the user mentions.
+        """
         try:
-            with open(file_path, 'r') as f:
-                return f.read()
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+            if len(content) > 10000:
+                return content[:10000] + f"\n\n... [File truncated. Total size: {len(content)} chars] ..."
+            return content
         except FileNotFoundError:
             return f"File not found: {file_path}"
         except Exception as e:
@@ -84,60 +114,78 @@ def register(mcp):
 
     @mcp.tool()
     def write_file(file_path: str, content: str) -> str:
-        """Write content to a file."""
+        """
+        Write content to a file at any path. Creates parent directories if needed.
+        Use this to save code, notes, configurations, reports, or any content to disk.
+        """
         try:
-            # Ensure directory exists
             directory = os.path.dirname(file_path)
             if directory and not os.path.exists(directory):
-                os.makedirs(directory)
+                os.makedirs(directory, exist_ok=True)
 
-            with open(file_path, 'w') as f:
+            with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            return f"Successfully wrote to {file_path}"
+            size_kb = len(content.encode('utf-8')) / 1024
+            return f"Written {size_kb:.2f} KB to: {os.path.abspath(file_path)}"
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
     @mcp.tool()
     def install_package(package_name: str) -> str:
-        """Install a Python package using pip."""
+        """
+        Install a Python package using pip (or uv pip). Use this before running code that requires
+        a third-party library.
+        """
         try:
-            result = subprocess.run(
-                ['pip', 'install', package_name],
-                capture_output=True,
-                text=True,
-                timeout=30  # 30 second timeout for installation
-            )
+            # Try uv pip first (faster), fall back to pip
+            for cmd in [['uv', 'pip', 'install', package_name], ['pip', 'install', package_name]]:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=60
+                )
+                if result.returncode == 0:
+                    return f"Successfully installed: {package_name}"
 
-            if result.returncode == 0:
-                return f"Successfully installed {package_name}"
-            else:
-                return f"Failed to install {package_name}: {result.stderr.strip()}"
+            return f"Failed to install {package_name}: {result.stderr.strip()}"
         except subprocess.TimeoutExpired:
-            return f"Error: Installation of {package_name} timed out (30 second limit)."
+            return f"Installation of {package_name} timed out (60s)."
         except Exception as e:
             return f"Error installing package: {str(e)}"
 
     @mcp.tool()
-    def run_shell_command(command: str) -> str:
-        """Run a shell command and return the output."""
+    def run_shell_command(command: str, timeout: int = 0) -> str:
+        """
+        Run any shell command and return its output.
+        timeout: Optional override in seconds (default uses SHELL_EXEC_TIMEOUT env var, default 60s).
+        Use this for git commands, file operations, system admin tasks, running scripts, etc.
+        IMPORTANT: Runs in the workspace directory by default.
+        """
+        effective_timeout = timeout if timeout > 0 else SHELL_EXEC_TIMEOUT
+        workspace = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
+        Path(workspace).mkdir(parents=True, exist_ok=True)
+
         try:
             result = subprocess.run(
                 command,
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=15  # 15 second timeout
+                timeout=effective_timeout,
+                cwd=workspace,
             )
 
             if result.returncode == 0:
                 output = result.stdout.strip()
-                if result.stderr:
+                if result.stderr.strip():
                     output += f"\nStderr: {result.stderr.strip()}"
                 return output if output else "Command executed successfully with no output."
             else:
-                return f"Command failed with exit code {result.returncode}:\n{result.stderr.strip()}"
+                return (
+                    f"Command failed (exit {result.returncode}):\n"
+                    f"Stdout: {result.stdout.strip()}\n"
+                    f"Stderr: {result.stderr.strip()}"
+                )
         except subprocess.TimeoutExpired:
-            return "Error: Command execution timed out (15 second limit)."
+            return f"Error: Command timed out after {effective_timeout}s."
         except Exception as e:
             return f"Error running command: {str(e)}"
 
@@ -145,8 +193,7 @@ def register(mcp):
     def encode_base64(data: str) -> str:
         """Encode a string to base64."""
         try:
-            encoded = base64.b64encode(data.encode('utf-8')).decode('utf-8')
-            return encoded
+            return base64.b64encode(data.encode('utf-8')).decode('utf-8')
         except Exception as e:
             return f"Error encoding to base64: {str(e)}"
 
@@ -154,100 +201,121 @@ def register(mcp):
     def decode_base64(data: str) -> str:
         """Decode a base64 string."""
         try:
-            decoded = base64.b64decode(data).decode('utf-8')
-            return decoded
+            return base64.b64decode(data).decode('utf-8')
         except Exception as e:
             return f"Error decoding from base64: {str(e)}"
 
     @mcp.tool()
     def start_background_process(command: str) -> str:
-        """Start a long-running shell command in the background. Returns a task ID."""
+        """
+        Start a long-running shell command in the background. Returns a task ID.
+        Use this to kick off slow processes without blocking (e.g., a dev server, a build script).
+        """
         try:
-            task_id = str(uuid.uuid4())
-            # Run in shell, detach process as much as possible simply
+            task_id = str(uuid.uuid4())[:8]
+            workspace = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
+            Path(workspace).mkdir(parents=True, exist_ok=True)
+
+            log_path = os.path.join(workspace, f"bg_task_{task_id}.log")
+            log_f = open(log_path, "w")
+
             process = subprocess.Popen(
-                command, 
-                shell=True, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                text=True
+                command,
+                shell=True,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=workspace,
             )
-            BACKGROUND_TASKS[task_id] = process
-            return f"Task started in background with ID: {task_id}"
+            BACKGROUND_TASKS[task_id] = {"process": process, "log": log_path, "command": command}
+            return f"Background task started. ID: {task_id}\nLog: {log_path}"
         except Exception as e:
-            return f"Failed to start task: {str(e)}"
+            return f"Failed to start background task: {str(e)}"
 
     @mcp.tool()
     def check_process_status(task_id: str) -> str:
-        """Check the status of a background process by ID and fetch output if done."""
+        """
+        Check the status and output of a background process started via start_background_process.
+        Returns current output and whether the process is still running.
+        """
         if task_id not in BACKGROUND_TASKS:
-            return f"No task found with ID: {task_id}"
-        
-        process = BACKGROUND_TASKS[task_id]
+            return f"No background task found with ID: {task_id}"
+
+        entry = BACKGROUND_TASKS[task_id]
+        process = entry["process"]
+        log_path = entry.get("log", "")
         retcode = process.poll()
-        
+
+        log_content = ""
+        if log_path and os.path.exists(log_path):
+            with open(log_path, "r") as f:
+                log_content = f.read()[-3000:]  # Last 3000 chars
+
         if retcode is None:
-            return f"Task {task_id} is still running."
-        
-        stdout, stderr = process.communicate()
+            return f"Task {task_id} is RUNNING.\nRecent output:\n{log_content}"
+
         BACKGROUND_TASKS.pop(task_id, None)
-        
-        return (f"Task {task_id} completed with code {retcode}.\n"
-                f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}")
+        return f"Task {task_id} COMPLETED (exit code {retcode}).\nOutput:\n{log_content}"
 
     @mcp.tool()
     def read_file_snippet(file_path: str, start_line: int, end_line: int) -> str:
-        """Read a specific range of lines from a file. (1-indexed)"""
+        """
+        Read a specific range of lines from a file (1-indexed).
+        Use this to inspect specific sections of large files without reading the whole thing.
+        """
         try:
-            with open(file_path, 'r') as f:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                 lines = f.readlines()
-            
-            if start_line < 1: start_line = 1
-            if end_line > len(lines): end_line = len(lines)
-            
-            snippet = "".join(lines[start_line-1:end_line])
+
+            start_line = max(1, start_line)
+            end_line = min(len(lines), end_line)
+            snippet = "".join(lines[start_line - 1:end_line])
             return f"--- {file_path} (Lines {start_line}-{end_line}) ---\n{snippet}"
         except Exception as e:
             return f"Error reading snippet: {str(e)}"
 
     @mcp.tool()
     def list_directory_tree(path: str, max_depth: int = 2) -> str:
-        """List the directory structure to a given max depth. Useful to understand project structure."""
+        """
+        List the directory structure to a given depth.
+        Useful for understanding project layouts or navigating the filesystem.
+        """
         try:
             if not os.path.exists(path):
                 return f"Path does not exist: {path}"
-            
+
             tree_str = []
-            start_depth = path.rstrip(os.path.sep).count(os.path.sep)
-            
+            start_depth = path.rstrip(os.sep).count(os.sep)
+
             for root, dirs, files in os.walk(path):
-                # Standard exclusion of dot directories
                 dirs[:] = [d for d in dirs if not d.startswith('.')]
-                
-                curr_depth = root.rstrip(os.path.sep).count(os.path.sep)
+                curr_depth = root.rstrip(os.sep).count(os.sep)
                 depth = curr_depth - start_depth
-                
+
                 if depth > max_depth:
                     continue
-                
+
                 indent = '  ' * depth
                 tree_str.append(f"{indent}{os.path.basename(root)}/")
                 sub_indent = '  ' * (depth + 1)
-                for f in files:
-                    if not f.startswith('.'):
-                        tree_str.append(f"{sub_indent}{f}")
-            
+                for fn in files:
+                    if not fn.startswith('.'):
+                        tree_str.append(f"{sub_indent}{fn}")
+
             return "\n".join(tree_str)
         except Exception as e:
             return f"Error listing directory: {str(e)}"
 
     @mcp.tool()
     def search_in_files(directory: str, keyword: str) -> str:
-        """Search for a keyword in files within a directory using basic text matching."""
+        """
+        Search for a keyword in all text files within a directory.
+        Use this to find where something is used in a codebase or document collection.
+        """
         try:
             if not os.path.exists(directory):
                 return f"Directory does not exist: {directory}"
-                
+
             results = []
             for root, dirs, files in os.walk(directory):
                 dirs[:] = [d for d in dirs if not d.startswith('.')]
@@ -255,7 +323,6 @@ def register(mcp):
                     if file_name.startswith('.'):
                         continue
                     file_path = os.path.join(root, file_name)
-                    # Simple text match, ignore binary files
                     try:
                         with open(file_path, 'r', encoding='utf-8') as f:
                             for idx, line in enumerate(f):
@@ -264,11 +331,11 @@ def register(mcp):
                                     if len(results) > 50:
                                         results.append("... [More results truncated] ...")
                                         return "\n".join(results)
-                    except UnicodeDecodeError:
-                        pass # Ignore binary files
-            
+                    except (UnicodeDecodeError, PermissionError):
+                        pass
+
             if not results:
-                return f"Keyword '{keyword}' not found in {directory}."
+                return f"'{keyword}' not found in {directory}."
             return "\n".join(results)
         except Exception as e:
             return f"Error searching files: {str(e)}"

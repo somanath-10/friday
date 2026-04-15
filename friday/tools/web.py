@@ -4,9 +4,11 @@ Web tools — search, fetch pages, and global news briefings.
 
 import httpx
 import xml.etree.ElementTree as ET
-import asyncio  # Required for parallel execution
+import asyncio
 import re
 import json
+import os
+import urllib.parse
 from datetime import datetime
 
 SEED_FEEDS = [
@@ -16,15 +18,15 @@ SEED_FEEDS = [
     'https://www.aljazeera.com/xml/rss/all.xml'
 ]
 
-# Programming-focused search sites
-PROGRAMMING_SITES = [
-    'stackoverflow.com',
-    'github.com',
-    'docs.python.org',
-    'developer.mozilla.org',
-    'dev.to',
-    'medium.com/tag/programming'
-]
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 
 async def fetch_and_parse_feed(client, url):
     """Helper function to handle a single feed request and parse its XML."""
@@ -34,17 +36,15 @@ async def fetch_and_parse_feed(client, url):
             return []
 
         root = ET.fromstring(response.content)
-        # Extract source name from URL (e.g., 'BBC' or 'NYTIMES')
         source_name = url.split('.')[1].upper()
-        
+
         feed_items = []
-        # Get top 5 items per feed
         items = root.findall(".//item")[:5]
         for item in items:
             title = item.findtext("title")
             description = item.findtext("description")
             link = item.findtext("link")
-            
+
             if description:
                 description = re.sub('<[^<]+?>', '', description).strip()
 
@@ -56,8 +56,93 @@ async def fetch_and_parse_feed(client, url):
             })
         return feed_items
     except Exception:
-        # If one feed fails, return an empty list so others can still succeed
         return []
+
+
+async def _brave_search(client: httpx.AsyncClient, query: str, count: int = 5) -> list:
+    """Use Brave Search API if key is available."""
+    brave_key = os.environ.get("BRAVE_API_KEY", "")
+    if not brave_key:
+        return []
+    try:
+        resp = await client.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            params={"q": query, "count": count, "text_decorations": False},
+            headers={"Accept": "application/json", "Accept-Encoding": "gzip", "X-Subscription-Token": brave_key},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            results = []
+            for item in data.get("web", {}).get("results", []):
+                results.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("url", ""),
+                    "snippet": item.get("description", ""),
+                })
+            return results
+    except Exception:
+        pass
+    return []
+
+
+async def _ddg_html_search(client: httpx.AsyncClient, query: str) -> list:
+    """Scrape DuckDuckGo HTML search results (no API key needed)."""
+    try:
+        encoded = urllib.parse.quote_plus(query)
+        url = f"https://html.duckduckgo.com/html/?q={encoded}"
+        resp = await client.get(url, headers=HEADERS, timeout=10)
+        if resp.status_code != 200:
+            return []
+
+        html = resp.text
+        results = []
+
+        # Extract result blocks
+        blocks = re.findall(
+            r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?'
+            r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+            html, re.DOTALL
+        )
+
+        for url_raw, title_html, snippet_html in blocks[:8]:
+            title = re.sub('<[^>]+>', '', title_html).strip()
+            snippet = re.sub('<[^>]+>', '', snippet_html).strip()
+            # DDG uses redirect URLs — extract real URL
+            real_url = url_raw
+            uddg_match = re.search(r'uddg=([^&]+)', url_raw)
+            if uddg_match:
+                real_url = urllib.parse.unquote(uddg_match.group(1))
+            if title and snippet:
+                results.append({"title": title, "url": real_url, "snippet": snippet})
+
+        return results
+    except Exception:
+        return []
+
+
+async def _ddg_instant_answer(client: httpx.AsyncClient, query: str) -> str:
+    """DuckDuckGo instant answer as last-resort fallback."""
+    try:
+        encoded = urllib.parse.quote_plus(query)
+        url = f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1&skip_disambig=1"
+        resp = await client.get(url, timeout=8)
+        if resp.status_code == 200:
+            data = resp.json()
+            parts = []
+            for key in ("Answer", "Definition", "Abstract", "AbstractText"):
+                val = data.get(key, "").strip()
+                if val:
+                    parts.append(val)
+            for t in data.get("RelatedTopics", [])[:3]:
+                if isinstance(t, dict) and "Text" in t:
+                    parts.append(t["Text"])
+            if parts:
+                return " ".join(parts)[:600]
+    except Exception:
+        pass
+    return ""
+
 
 def register(mcp):
 
@@ -67,24 +152,15 @@ def register(mcp):
         Fetches the latest global headlines from major news outlets simultaneously.
         Use this when the user asks 'What's going on in the world?' or for recent events.
         """
-        
         async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
-            # 1. Create a list of 'tasks' (one for each URL)
             tasks = [fetch_and_parse_feed(client, url) for url in SEED_FEEDS]
-            
-            # 2. Fire them all at once and wait for the results
-            # results will be a list of lists: [[news from bbc], [news from nyt], ...]
             results_of_lists = await asyncio.gather(*tasks)
-            
-            # 3. Flatten the list of lists into a single list of articles
             all_articles = [item for sublist in results_of_lists for item in sublist]
 
         if not all_articles:
             return "The global news grid is unresponsive, sir. I'm unable to pull headlines."
 
-        # 4. Format the final briefing
         report = ["### GLOBAL NEWS BRIEFING (LIVE)\n"]
-        # Limit to top 12 items so the AI doesn't get overwhelmed
         for entry in all_articles[:12]:
             report.append(f"**[{entry['source']}]** {entry['title']}")
             report.append(f"{entry['summary']}")
@@ -94,110 +170,93 @@ def register(mcp):
 
     @mcp.tool()
     async def search_web(query: str) -> str:
-        """Search the web for a given query and return a summary of results."""
-        # For now, we'll use DuckDuckGo instant answer API as a free alternative
-        # In production, you might want to use Google Custom Search or another service
+        """
+        Search the web for any query and return a summary of real search results.
+        Use this for any question requiring current information, facts, news, or research.
+        Tries Brave Search API first (if BRAVE_API_KEY is set), then falls back to DuckDuckGo scraping.
+        """
         try:
-            import urllib.parse
-            encoded_query = urllib.parse.quote_plus(query)
-            url = f"https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disambig=1"
+            async with httpx.AsyncClient(follow_redirects=True, timeout=12) as client:
+                # Priority 1: Brave API (best results)
+                results = await _brave_search(client, query)
 
-            async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
-                response = await client.get(url)
-                if response.status_code == 200:
-                    data = response.json()
+                # Priority 2: DDG HTML scraping
+                if not results:
+                    results = await _ddg_html_search(client, query)
 
-                    # Extract relevant information
-                    abstract = data.get('Abstract', '')
-                    abstract_text = data.get('AbstractText', '')
-                    related_topics = data.get('RelatedTopics', [])
-                    definition = data.get('Definition', '')
-                    answer = data.get('Answer', '')
+                if results:
+                    parts = [f"Search results for: '{query}'\n"]
+                    for i, r in enumerate(results[:6], 1):
+                        parts.append(f"{i}. **{r['title']}**")
+                        if r.get("snippet"):
+                            parts.append(f"   {r['snippet']}")
+                        parts.append(f"   {r['url']}")
+                    return "\n".join(parts)
 
-                    result_parts = []
-                    if answer:
-                        result_parts.append(answer)
-                    if definition:
-                        result_parts.append(definition)
-                    if abstract:
-                        result_parts.append(abstract)
-                    elif abstract_text:
-                        result_parts.append(abstract_text)
+                # Priority 3: DDG instant answer
+                instant = await _ddg_instant_answer(client, query)
+                if instant:
+                    return f"Search result for '{query}':\n{instant}"
 
-                    # Add some related topics if available
-                    if related_topics and len(result_parts) < 3:
-                        for topic in related_topics[:3]:  # Limit to 3 topics
-                            if isinstance(topic, dict) and 'Text' in topic:
-                                result_parts.append(topic['Text'])
-                            elif isinstance(topic, str):
-                                result_parts.append(topic)
+                return f"Search yielded no clear results for '{query}'. Try rephrasing or use fetch_url with a specific URL."
 
-                    if result_parts:
-                        return " ".join(result_parts)[:800]  # Limit response length
-                    else:
-                        return f"I searched for '{query}' but didn't find a clear answer. You might want to try more specific terms or check your spelling."
-                else:
-                    return f"Search service temporarily unavailable. Status: {response.status_code}"
         except Exception as e:
-            return f"I encountered an error while searching: {str(e)}"
+            return f"Search error: {str(e)}"
 
     @mcp.tool()
     async def search_code(query: str) -> str:
-        """Search for programming-related code snippets and documentation."""
+        """
+        Search for programming-related code snippets, documentation, and technical resources.
+        Searches Stack Overflow, GitHub, and official docs. Use for coding questions.
+        """
         try:
-            import urllib.parse
-            # Add site restrictions for programming resources
-            programming_query = f"{query} site:stackoverflow.com OR site:github.com OR site:docs.python.org OR site:developer.mozilla.org"
-            encoded_query = urllib.parse.quote_plus(programming_query)
-            url = f"https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disambig=1"
+            async with httpx.AsyncClient(follow_redirects=True, timeout=12) as client:
+                tech_query = f"{query} site:stackoverflow.com OR site:github.com OR site:docs.python.org"
 
-            async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
-                response = await client.get(url)
-                if response.status_code == 200:
-                    data = response.json()
+                results = await _brave_search(client, tech_query)
+                if not results:
+                    results = await _ddg_html_search(client, tech_query)
 
-                    # Extract relevant information
-                    abstract = data.get('Abstract', '')
-                    abstract_text = data.get('AbstractText', '')
-                    related_topics = data.get('RelatedTopics', [])
-                    definition = data.get('Definition', '')
-                    answer = data.get('Answer', '')
+                if results:
+                    parts = [f"Code/Tech search: '{query}'\n"]
+                    for i, r in enumerate(results[:5], 1):
+                        parts.append(f"{i}. **{r['title']}**")
+                        if r.get("snippet"):
+                            parts.append(f"   {r['snippet']}")
+                        parts.append(f"   {r['url']}")
+                    return "\n".join(parts)
 
-                    result_parts = []
-                    if answer:
-                        result_parts.append(answer)
-                    if definition:
-                        result_parts.append(definition)
-                    if abstract:
-                        result_parts.append(abstract)
-                    elif abstract_text:
-                        result_parts.append(abstract_text)
+                instant = await _ddg_instant_answer(client, query)
+                if instant:
+                    return f"Tech result for '{query}':\n{instant}"
 
-                    # Add some related topics if available
-                    if related_topics and len(result_parts) < 3:
-                        for topic in related_topics[:3]:  # Limit to 3 topics
-                            if isinstance(topic, dict) and 'Text' in topic:
-                                result_parts.append(topic['Text'])
-                            elif isinstance(topic, str):
-                                result_parts.append(topic)
+                return f"No code resources found for '{query}'. Try searching directly on stackoverflow.com or github.com."
 
-                    if result_parts:
-                        return " ".join(result_parts)[:800]  # Limit response length
-                    else:
-                        return f"I searched for programming resources on '{query}' but didn't find a clear answer. You might want to try more specific terms or check GitHub/Stack Overflow directly."
-                else:
-                    return f"Code search service temporarily unavailable. Status: {response.status_code}"
         except Exception as e:
-            return f"I encountered an error while searching for code: {str(e)}"
+            return f"Code search error: {str(e)}"
 
     @mcp.tool()
     async def fetch_url(url: str) -> str:
-        """Fetch the raw text content of a URL."""
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            return response.text[:4000]
-    
+        """
+        Fetch the text content of any URL. Use to read articles, documentation, or web pages.
+        Returns the first 4000 characters of the page content.
+        """
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+                response = await client.get(url, headers=HEADERS)
+                response.raise_for_status()
+
+                content = response.text
+                # Strip common HTML tags for readability
+                content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL)
+                content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL)
+                content = re.sub(r'<[^>]+>', ' ', content)
+                content = re.sub(r'\s+', ' ', content).strip()
+
+                return content[:5000] + ("\n\n... [content truncated] ..." if len(content) > 5000 else "")
+        except Exception as e:
+            return f"Error fetching URL: {str(e)}"
+
     @mcp.tool()
     async def open_world_monitor() -> str:
         """
@@ -206,10 +265,21 @@ def register(mcp):
         """
         import webbrowser
         url = "https://worldmonitor.app/"
-        
         try:
-            # This opens the URL in the default browser (Chrome/Edge/Safari)
             webbrowser.open(url)
             return "Displaying the World Monitor on your primary screen now, sir."
         except Exception as e:
             return f"I'm unable to initialize the visual monitor: {str(e)}"
+
+    @mcp.tool()
+    async def open_url(url: str) -> str:
+        """
+        Open any URL in the default web browser on the host machine.
+        Use this when the user says 'open this link', 'go to this website', 'show me X website'.
+        """
+        import webbrowser
+        try:
+            webbrowser.open(url)
+            return f"Opened {url} in your browser."
+        except Exception as e:
+            return f"Error opening URL: {str(e)}"
