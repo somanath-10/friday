@@ -8,6 +8,8 @@ import platform
 import subprocess
 import os
 
+from friday.path_utils import workspace_dir
+
 OS = platform.system()  # "Darwin" | "Linux" | "Windows"
 
 
@@ -178,7 +180,7 @@ def register(mcp):
                 "python": platform.python_version(),
                 "user": os.environ.get("USER", os.environ.get("USERNAME", "unknown")),
                 "home": str(os.path.expanduser("~")),
-                "workspace": os.path.abspath(os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")),
+                "workspace": str(workspace_dir()),
                 "shell": os.environ.get("SHELL", os.environ.get("COMSPEC", "unknown")),
             }
             lines = [f"{k}: {v}" for k, v in info.items()]

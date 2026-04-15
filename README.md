@@ -7,7 +7,7 @@ A Tony Stark-inspired AI assistant split into two cooperating pieces:
 | Component | What it is |
 |-----------|-----------|
 | **MCP Server** (`uv run friday`) | A [FastMCP](https://github.com/jlowin/fastmcp) server that exposes tools (news, web search, system info, …) over SSE. Think of it as the Stark Industries backend — it does the actual work. |
-| **Voice Agent** (`uv run friday_voice`) | A [LiveKit Agents](https://github.com/livekit/agents) voice pipeline that listens to your microphone, reasons with an LLM (Gemini 2.5 Flash by default), and speaks back with OpenAI TTS — all while pulling tools from the MCP server in real time. |
+| **Voice Agent** (`uv run friday_voice`) | A [LiveKit Agents](https://github.com/livekit/agents) voice pipeline that listens to your microphone, reasons with an LLM (Gemini 2.5 Flash by default), and speaks back with your configured TTS provider — all while pulling tools from the MCP server in real time. |
 
 ---
 
@@ -20,13 +20,13 @@ Microphone ──► STT (Sarvam Saaras v3)
              LLM (Gemini 2.5 Flash)  ◄──────► MCP Server (FastMCP / SSE)
                     │                              ├─ get_world_news
                     ▼                              ├─ open_world_monitor
-             TTS (OpenAI nova)                     ├─ search_web
+             TTS (Sarvam Bulbul v3)                ├─ search_web
                     │                              └─ …more tools
                     ▼
              Speaker / LiveKit room
 ```
 
-The voice agent connects to the MCP server via SSE at `http://127.0.0.1:8000/sse` (auto-resolved to the Windows host IP when running inside WSL).
+The voice agent connects to the MCP server via SSE at `http://127.0.0.1:8000/sse` by default. Host, port, mount path, and SSE path are all configurable through `.env`.
 
 ---
 ## Quick start
@@ -98,6 +98,7 @@ Copy `.env.example` → `.env` and fill in the values below.
 | `DEEPGRAM_API_KEY` | optional | [console.deepgram.com](https://console.deepgram.com) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | optional | GCP service-account JSON path — only for `STT_PROVIDER = "google"` |
 | `GOOGLE_API_KEY` | ✅ (default LLM) | [aistudio.google.com](https://aistudio.google.com/projects) |
+| `FRIDAY_MAX_TOOL_STEPS` | optional | Raises per-turn tool budget for more complex tasks; default is `8` |
 | `SUPABASE_URL` | optional | [supabase.com](https://supabase.com) — for the ticketing tool |
 | `SUPABASE_API_KEY` | optional | Supabase project → API settings |
 
@@ -108,9 +109,9 @@ Copy `.env.example` → `.env` and fill in the values below.
 Open `agent_friday.py` and change the provider constants at the top:
 
 ```python
-STT_PROVIDER = "sarvam"   # "sarvam" | "whisper"
-LLM_PROVIDER = "gemini"   # "gemini" | "openai"
-TTS_PROVIDER = "openai"   # "openai" | "sarvam"
+STT_PROVIDER = "deepgram"   # "deepgram" | "sarvam" | "whisper"
+LLM_PROVIDER = "gemini"     # "gemini" | "openai"
+TTS_PROVIDER = "sarvam"     # "sarvam" | "openai"
 ```
 
 ---
@@ -129,9 +130,9 @@ The MCP server will pick it up on next start.
 
 - **[FastMCP](https://github.com/jlowin/fastmcp)** — MCP server framework
 - **[LiveKit Agents](https://github.com/livekit/agents)** — real-time voice pipeline
-- **Sarvam Saaras v3** — STT (Indian-English optimised)
+- **Deepgram Nova-3** — STT
 - **Google Gemini 2.5 Flash** — LLM
-- **OpenAI TTS** (`nova` voice) — TTS
+- **Sarvam Bulbul v3** — TTS
 - **[uv](https://github.com/astral-sh/uv)** — fast Python package manager
 
 ---

@@ -10,11 +10,11 @@ import time
 import tempfile
 from pathlib import Path
 
+from friday.path_utils import resolve_user_path, safe_filename, workspace_dir, workspace_path
+
 
 def _workspace_dir() -> str:
-    base = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
-    Path(base).mkdir(parents=True, exist_ok=True)
-    return os.path.abspath(base)
+    return str(workspace_dir())
 
 
 def register(mcp):
@@ -28,14 +28,13 @@ def register(mcp):
         """
         import httpx
         try:
-            workspace = _workspace_dir()
+            workspace = workspace_dir()
 
             if not filename:
                 filename = url.split("/")[-1].split("?")[0] or f"download_{int(time.time())}"
-            if not filename:
-                filename = f"file_{int(time.time())}"
+            filename = safe_filename(filename, f"download_{int(time.time())}")
 
-            save_path = os.path.join(workspace, filename)
+            save_path = workspace_path(filename)
 
             async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
                 response = await client.get(url)
@@ -58,16 +57,17 @@ def register(mcp):
         file_path: Absolute or relative path to the .pdf file.
         """
         try:
-            if not os.path.exists(file_path):
-                return f"File not found: {file_path}"
+            resolved_path = resolve_user_path(file_path)
+            if not os.path.exists(resolved_path):
+                return f"File not found: {resolved_path}"
 
-            if not file_path.lower().endswith(".pdf"):
+            if not str(resolved_path).lower().endswith(".pdf"):
                 return "This tool only reads PDF files. Use get_file_contents for text files."
 
             # Try pypdf first (fast, pure Python)
             try:
                 import pypdf
-                reader = pypdf.PdfReader(file_path)
+                reader = pypdf.PdfReader(str(resolved_path))
                 text_parts = []
                 for i, page in enumerate(reader.pages):
                     page_text = page.extract_text()
@@ -88,7 +88,7 @@ def register(mcp):
             # Fallback: use pdftotext (if available on macOS via Homebrew)
             try:
                 result = subprocess.run(
-                    ["pdftotext", file_path, "-"],
+                    ["pdftotext", str(resolved_path), "-"],
                     capture_output=True, text=True, timeout=30
                 )
                 if result.returncode == 0 and result.stdout.strip():
@@ -118,14 +118,14 @@ def register(mcp):
         subdirectory: Optional sub-folder inside the workspace.
         """
         try:
-            workspace = _workspace_dir()
+            workspace = workspace_dir()
             if subdirectory:
-                target_dir = os.path.join(workspace, subdirectory)
+                target_dir = workspace_path(subdirectory)
                 Path(target_dir).mkdir(parents=True, exist_ok=True)
             else:
                 target_dir = workspace
 
-            file_path = os.path.join(target_dir, filename)
+            file_path = Path(target_dir) / safe_filename(filename, "document.txt")
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
@@ -171,6 +171,8 @@ def register(mcp):
         try:
             if not path:
                 path = _workspace_dir()
+            else:
+                path = str(resolve_user_path(path))
 
             if not os.path.exists(path):
                 return f"Path does not exist: {path}"
@@ -189,9 +191,11 @@ def register(mcp):
         Use this to add to a log, journal, notes file, or any document the user wants to extend.
         """
         try:
-            with open(file_path, "a", encoding="utf-8") as f:
+            resolved_path = resolve_user_path(file_path)
+            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(resolved_path, "a", encoding="utf-8") as f:
                 f.write(content)
-            return f"Appended {len(content)} characters to {file_path}"
+            return f"Appended {len(content)} characters to {resolved_path}"
         except Exception as e:
             return f"Error appending to file: {str(e)}"
 
@@ -202,8 +206,7 @@ def register(mcp):
         Use this when the user says 'delete this file', 'remove X from workspace', 'clean up X'.
         """
         try:
-            workspace = _workspace_dir()
-            file_path = os.path.join(workspace, filename)
+            file_path = workspace_path(filename)
             if not os.path.exists(file_path):
                 return f"File not found in workspace: {filename}"
             os.remove(file_path)

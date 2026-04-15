@@ -11,6 +11,8 @@ import uuid
 import time
 from pathlib import Path
 
+from friday.path_utils import resolve_user_path, workspace_dir
+
 BACKGROUND_TASKS = {}
 
 # Configurable timeouts (can override via .env)
@@ -51,8 +53,7 @@ def register(mcp):
         effective_timeout = timeout if timeout > 0 else PYTHON_EXEC_TIMEOUT
         try:
             # Write code to a temp file with proper workspace context
-            workspace = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
-            Path(workspace).mkdir(parents=True, exist_ok=True)
+            workspace = workspace_dir()
 
             with tempfile.NamedTemporaryFile(
                 mode='w', suffix='.py', delete=False,
@@ -61,7 +62,7 @@ def register(mcp):
                 # Inject workspace path so scripts can create files there easily
                 preamble = (
                     f"import os, sys\n"
-                    f"WORKSPACE = {repr(os.path.abspath(workspace))}\n"
+                    f"WORKSPACE = {repr(str(workspace))}\n"
                     f"os.makedirs(WORKSPACE, exist_ok=True)\n\n"
                 )
                 f.write(preamble + code)
@@ -102,13 +103,14 @@ def register(mcp):
         Use this to read source code, config files, notes, logs, or any text file the user mentions.
         """
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            resolved_path = resolve_user_path(file_path)
+            with open(resolved_path, 'r', encoding='utf-8', errors='replace') as f:
                 content = f.read()
             if len(content) > 10000:
                 return content[:10000] + f"\n\n... [File truncated. Total size: {len(content)} chars] ..."
             return content
         except FileNotFoundError:
-            return f"File not found: {file_path}"
+            return f"File not found: {resolve_user_path(file_path)}"
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
@@ -119,14 +121,15 @@ def register(mcp):
         Use this to save code, notes, configurations, reports, or any content to disk.
         """
         try:
-            directory = os.path.dirname(file_path)
+            resolved_path = resolve_user_path(file_path)
+            directory = os.path.dirname(resolved_path)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory, exist_ok=True)
 
-            with open(file_path, 'w', encoding='utf-8') as f:
+            with open(resolved_path, 'w', encoding='utf-8') as f:
                 f.write(content)
             size_kb = len(content.encode('utf-8')) / 1024
-            return f"Written {size_kb:.2f} KB to: {os.path.abspath(file_path)}"
+            return f"Written {size_kb:.2f} KB to: {resolved_path}"
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
@@ -160,8 +163,7 @@ def register(mcp):
         IMPORTANT: Runs in the workspace directory by default.
         """
         effective_timeout = timeout if timeout > 0 else SHELL_EXEC_TIMEOUT
-        workspace = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
-        Path(workspace).mkdir(parents=True, exist_ok=True)
+        workspace = workspace_dir()
 
         try:
             result = subprocess.run(
@@ -213,8 +215,7 @@ def register(mcp):
         """
         try:
             task_id = str(uuid.uuid4())[:8]
-            workspace = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
-            Path(workspace).mkdir(parents=True, exist_ok=True)
+            workspace = workspace_dir()
 
             log_path = os.path.join(workspace, f"bg_task_{task_id}.log")
             log_f = open(log_path, "w")
@@ -264,13 +265,14 @@ def register(mcp):
         Use this to inspect specific sections of large files without reading the whole thing.
         """
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            resolved_path = resolve_user_path(file_path)
+            with open(resolved_path, 'r', encoding='utf-8', errors='replace') as f:
                 lines = f.readlines()
 
             start_line = max(1, start_line)
             end_line = min(len(lines), end_line)
             snippet = "".join(lines[start_line - 1:end_line])
-            return f"--- {file_path} (Lines {start_line}-{end_line}) ---\n{snippet}"
+            return f"--- {resolved_path} (Lines {start_line}-{end_line}) ---\n{snippet}"
         except Exception as e:
             return f"Error reading snippet: {str(e)}"
 
@@ -281,13 +283,14 @@ def register(mcp):
         Useful for understanding project layouts or navigating the filesystem.
         """
         try:
-            if not os.path.exists(path):
-                return f"Path does not exist: {path}"
+            resolved_path = resolve_user_path(path)
+            if not os.path.exists(resolved_path):
+                return f"Path does not exist: {resolved_path}"
 
             tree_str = []
-            start_depth = path.rstrip(os.sep).count(os.sep)
+            start_depth = str(resolved_path).rstrip(os.sep).count(os.sep)
 
-            for root, dirs, files in os.walk(path):
+            for root, dirs, files in os.walk(resolved_path):
                 dirs[:] = [d for d in dirs if not d.startswith('.')]
                 curr_depth = root.rstrip(os.sep).count(os.sep)
                 depth = curr_depth - start_depth
@@ -313,11 +316,12 @@ def register(mcp):
         Use this to find where something is used in a codebase or document collection.
         """
         try:
-            if not os.path.exists(directory):
-                return f"Directory does not exist: {directory}"
+            resolved_directory = resolve_user_path(directory)
+            if not os.path.exists(resolved_directory):
+                return f"Directory does not exist: {resolved_directory}"
 
             results = []
-            for root, dirs, files in os.walk(directory):
+            for root, dirs, files in os.walk(resolved_directory):
                 dirs[:] = [d for d in dirs if not d.startswith('.')]
                 for file_name in files:
                     if file_name.startswith('.'):
@@ -335,7 +339,7 @@ def register(mcp):
                         pass
 
             if not results:
-                return f"'{keyword}' not found in {directory}."
+                return f"'{keyword}' not found in {resolved_directory}."
             return "\n".join(results)
         except Exception as e:
             return f"Error searching files: {str(e)}"

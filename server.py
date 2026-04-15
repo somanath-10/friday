@@ -17,6 +17,8 @@ load_dotenv()
 SERVER_NAME         = os.getenv("SERVER_NAME", "Friday")
 SERVER_HOST         = os.getenv("MCP_SERVER_HOST", "0.0.0.0")
 SERVER_PORT         = int(os.getenv("MCP_SERVER_PORT", "8000"))
+SERVER_MOUNT_PATH   = os.getenv("MCP_MOUNT_PATH", "/")
+SERVER_SSE_PATH     = os.getenv("MCP_SSE_PATH", "/sse")
 SERVER_INSTRUCTIONS = os.getenv(
     "SERVER_INSTRUCTIONS",
     "I am F.R.I.D.A.Y., a Tony Stark-style AI assistant. "
@@ -28,6 +30,12 @@ SERVER_INSTRUCTIONS = os.getenv(
 mcp = FastMCP(
     name=SERVER_NAME,
     instructions=SERVER_INSTRUCTIONS,
+    host=SERVER_HOST,
+    port=SERVER_PORT,
+    mount_path=SERVER_MOUNT_PATH,
+    sse_path=SERVER_SSE_PATH,
+    debug=config.DEBUG,
+    log_level="DEBUG" if config.DEBUG else "INFO",
 )
 
 # Register tools, prompts, and resources
@@ -37,7 +45,7 @@ register_all_resources(mcp)
 
 
 def main():
-    mcp.run(transport='sse')
+    mcp.run(transport="sse", mount_path=SERVER_MOUNT_PATH)
 
 
 if __name__ == "__main__":

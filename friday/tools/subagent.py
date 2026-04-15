@@ -7,7 +7,10 @@ import json
 import os
 import uuid
 import subprocess
+import sys
 from pathlib import Path
+
+from friday.path_utils import resolve_user_path, workspace_dir
 
 
 def register(mcp):
@@ -32,9 +35,9 @@ def register(mcp):
         """
         try:
             task_id = str(uuid.uuid4())[:8]
-            base_workspace = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
-            workspace_dir = os.path.abspath(os.path.join(base_workspace, f"subagent_{task_id}"))
-            os.makedirs(workspace_dir, exist_ok=True)
+            base_workspace = workspace_dir()
+            task_workspace = (base_workspace / f"subagent_{task_id}").resolve()
+            task_workspace.mkdir(parents=True, exist_ok=True)
 
             core_script = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), "worker_core.py"
@@ -42,17 +45,17 @@ def register(mcp):
 
             # Pass task_type as extra arg to the worker
             subprocess.Popen(
-                ["python3", core_script, objective, workspace_dir, task_type],
+                [sys.executable, core_script, objective, str(task_workspace), task_type],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                cwd=workspace_dir,
+                cwd=task_workspace,
                 env={**os.environ},  # Pass full env so worker has API keys & settings
             )
 
             return (
                 f"Mark IV Subagent dispatched! (ID: {task_id}, Type: {task_type})\n"
-                f"Working directory: {workspace_dir}\n"
-                f"Progress log: {workspace_dir}/subagent_log.md\n"
+                f"Working directory: {task_workspace}\n"
+                f"Progress log: {task_workspace}/subagent_log.md\n"
                 f"The worker will auto-correct its own errors and iterate until done."
             )
         except Exception as e:
@@ -68,15 +71,17 @@ def register(mcp):
         try:
             if not workspace_path:
                 # Try to find the most recent subagent folder
-                base = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
+                base = workspace_dir()
                 subagent_dirs = sorted(
-                    [d for d in Path(base).glob("subagent_*") if d.is_dir()],
+                    [d for d in base.glob("subagent_*") if d.is_dir()],
                     key=lambda d: d.stat().st_mtime,
                     reverse=True
                 )
                 if not subagent_dirs:
                     return "No subagent workspaces found."
                 workspace_path = str(subagent_dirs[0])
+            else:
+                workspace_path = str(resolve_user_path(workspace_path))
 
             log_path = os.path.join(workspace_path, "subagent_log.md")
 

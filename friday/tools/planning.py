@@ -2,11 +2,12 @@
 Planning tools — task decomposition, planning, and execution coordination.
 """
 
+from __future__ import annotations
+
 import json
-import re
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from enum import Enum
+from typing import Any
 
 
 class TaskStatus(Enum):
@@ -21,11 +22,136 @@ class TaskStep:
     id: str
     description: str
     tool_needed: str
-    parameters: Dict[str, Any]
-    dependencies: List[str]  # IDs of steps that must complete first
+    parameters: dict[str, Any]
+    dependencies: list[str]
     status: TaskStatus = TaskStatus.PENDING
-    result: Optional[str] = None
-    error: Optional[str] = None
+    result: str | None = None
+    error: str | None = None
+
+
+def _step(
+    step_id: str,
+    description: str,
+    tool_needed: str,
+    parameters: dict[str, Any],
+    dependencies: list[str] | None = None,
+) -> TaskStep:
+    return TaskStep(
+        id=step_id,
+        description=description,
+        tool_needed=tool_needed,
+        parameters=parameters,
+        dependencies=dependencies or [],
+    )
+
+
+def build_task_decomposition(request: str) -> dict[str, Any]:
+    request_lower = request.lower()
+    steps: list[TaskStep]
+
+    if "analyze" in request_lower and any(word in request_lower for word in ("code", "project", "repo")):
+        steps = [
+            _step(
+                "step1",
+                "Map the repository structure and identify likely entrypoints",
+                "list_directory_tree",
+                {"path": ".", "max_depth": 3},
+            ),
+            _step(
+                "step2",
+                "Read the main project configuration and documentation",
+                "get_file_contents",
+                {"file_path": "pyproject.toml"},
+                ["step1"],
+            ),
+            _step(
+                "step3",
+                "Search the codebase for the feature, bug, or area of interest",
+                "search_in_files",
+                {"directory": ".", "keyword": request},
+                ["step1"],
+            ),
+            _step(
+                "step4",
+                "Inspect the most relevant implementation blocks in detail",
+                "read_file_snippet",
+                {"file_path": "agent_friday.py", "start_line": 1, "end_line": 200},
+                ["step2", "step3"],
+            ),
+            _step(
+                "step5",
+                "Run a lightweight verification command once the review is complete",
+                "run_shell_command",
+                {"command": "python -m compileall ."},
+                ["step4"],
+            ),
+        ]
+    elif any(word in request_lower for word in ("research", "search", "latest", "find information")):
+        steps = [
+            _step(
+                "step1",
+                "Search the web for broad, current information",
+                "search_web",
+                {"query": request},
+            ),
+            _step(
+                "step2",
+                "Search for technical references if the request is implementation-oriented",
+                "search_code",
+                {"query": request},
+            ),
+            _step(
+                "step3",
+                "Open and summarize the most relevant source from the search results",
+                "fetch_url",
+                {"url": "<top_result_url>"},
+                ["step1", "step2"],
+            ),
+        ]
+    elif any(word in request_lower for word in ("create", "build", "implement", "make")):
+        steps = [
+            _step(
+                "step1",
+                "Inspect the current workspace before making changes",
+                "list_directory_tree",
+                {"path": ".", "max_depth": 3},
+            ),
+            _step(
+                "step2",
+                "Draft or update the target file(s) required for the implementation",
+                "write_file",
+                {"file_path": "workspace/implementation.txt", "content": "<implementation goes here>"},
+                ["step1"],
+            ),
+            _step(
+                "step3",
+                "Run a validation command or script against the new implementation",
+                "run_shell_command",
+                {"command": "python -m compileall ."},
+                ["step2"],
+            ),
+        ]
+    else:
+        steps = [
+            _step(
+                "step1",
+                "Gather the most relevant starting context for the request",
+                "search_web",
+                {"query": request},
+            )
+        ]
+
+    steps_data = []
+    for step in steps:
+        step_dict = asdict(step)
+        step_dict["status"] = step.status.value
+        steps_data.append(step_dict)
+
+    return {
+        "decomposition": steps_data,
+        "summary": f"Broken down into {len(steps)} actionable steps",
+        "next_action": steps_data[0]["description"] if steps_data else "No action required",
+    }
 
 
 def register(mcp):
@@ -37,149 +163,41 @@ def register(mcp):
         Analyzes the request and identifies required subtasks, tools needed, and dependencies.
         Use this when the user asks for something complex that requires multiple operations.
         """
-
-        # Simple rule-based decomposition (can be enhanced with LLM later)
-        request_lower = request.lower()
-
-        steps = []
-
-        # Pattern matching for common complex requests
-        if "analyze" in request_lower and ("code" in request_lower or "project" in request_lower):
-            steps.extend([
-                TaskStep(
-                    id="step1",
-                    description="Examine project structure and file types",
-                    tool_needed="glob",
-                    parameters={"pattern": "**/*", "path": "."},
-                    dependencies=[]
-                ),
-                TaskStep(
-                    id="step2",
-                    description="Read key configuration files",
-                    tool_needed="read",
-                    parameters={"file_path": ""},  # Will be filled based on step1 results
-                    dependencies=["step1"]
-                ),
-                TaskStep(
-                    id="step3",
-                    description="Analyze code quality and structure",
-                    tool_needed="execute_python_code",
-                    parameters={"code": ""},  # Will be filled with analysis code
-                    dependencies=["step1", "step2"]
-                )
-            ])
-
-        elif "search" in request_lower and ("information" in request_lower or "research" in request_lower):
-            steps.extend([
-                TaskStep(
-                    id="step1",
-                    description="Search for general information",
-                    tool_needed="search_web",
-                    parameters={"query": ""},  # Will extract from request
-                    dependencies=[]
-                ),
-                TaskStep(
-                    id="step2",
-                    description="Search for technical/code resources",
-                    tool_needed="search_code",
-                    parameters={"query": ""},  # Will extract from request
-                    dependencies=[]
-                ),
-                TaskStep(
-                    id="step3",
-                    description="Fetch and summarize relevant URLs",
-                    tool_needed="fetch_url",
-                    parameters={"url": ""},  # Will be filled from search results
-                    dependencies=["step1", "step2"]
-                )
-            ])
-
-        elif "create" in request_lower or "build" in request_lower:
-            steps.extend([
-                TaskStep(
-                    id="step1",
-                    description="Plan the implementation approach",
-                    tool_needed="format_json",
-                    parameters={"data": '{"approach": "to_be_determined"}'},  # Placeholder
-                    dependencies=[]
-                ),
-                TaskStep(
-                    id="step2",
-                    description="Create necessary files",
-                    tool_needed="write_file",
-                    parameters={"file_path": "", "content": ""},  # Will be filled
-                    dependencies=["step1"]
-                ),
-                TaskStep(
-                    id="step3",
-                    description="Test and validate the creation",
-                    tool_needed="execute_python_code",
-                    parameters={"code": ""},  # Will be filled with test code
-                    dependencies=["step2"]
-                )
-            ])
-        else:
-            # Generic fallback - break into logical steps based on keywords
-            steps.append(
-                TaskStep(
-                    id="step1",
-                    description="Gather initial information",
-                    tool_needed="search_web",
-                    parameters={"query": request},
-                    dependencies=[]
-                )
-            )
-
-            if any(word in request_lower for word in ["analyze", "examine", "review"]):
-                steps.append(
-                    TaskStep(
-                        id="step2",
-                        description="Process and analyze gathered information",
-                        tool_needed="execute_python_code",
-                        parameters={"code": "# Analysis code will be generated based on step1 results"},
-                        dependencies=["step1"]
-                    )
-                )
-
-        # Convert to JSON for return
-        steps_data = []
-        for step in steps:
-            step_dict = asdict(step)
-            step_dict['status'] = step.status.value
-            steps_data.append(step_dict)
-
-        return json.dumps({
-            "decomposition": steps_data,
-            "summary": f"Broken down into {len(steps)} actionable steps",
-            "next_action": "Execute steps in order, respecting dependencies"
-        }, indent=2)
+        return json.dumps(build_task_decomposition(request), indent=2)
 
     @mcp.tool()
-    async def track_plan_in_workspace(plan_json: str, workspace_path: str = None) -> str:
+    async def track_plan_in_workspace(plan_json: str, workspace_path: str | None = None) -> str:
         """
         Takes the JSON output from decompose_task and writes it as a Markdown checklist to the workspace.
         This provides a tangible, persistent tracker for long-running or complex tasks F.R.I.D.A.Y handles.
         """
         import os
+
         try:
             if workspace_path is None:
                 base_dir = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
                 workspace_path = os.path.join(base_dir, "current_plan.md")
-                
+
             plan_data = json.loads(plan_json)
             steps = plan_data.get("decomposition", [])
-            
+
             os.makedirs(os.path.dirname(os.path.abspath(workspace_path)), exist_ok=True)
-            
+
             lines = ["# F.R.I.D.A.Y Task Execution Plan\n"]
             for step in steps:
-                lines.append(f"- [ ] **Step {step['id']}**: {step['description']} (Tool: `{step['tool_needed']}`)")
-            
+                lines.append(
+                    f"- [ ] **Step {step['id']}**: {step['description']} "
+                    f"(Tool: `{step['tool_needed']}`)"
+                )
+
             with open(workspace_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
-                
-            return f"Plan successfully tracked. Checklist written to {os.path.abspath(workspace_path)}. Please read / update this file to track your task."
-            
+
+            return (
+                f"Plan successfully tracked. Checklist written to {os.path.abspath(workspace_path)}. "
+                "Please read / update this file to track your task."
+            )
+
         except Exception as e:
             return f"Error tracking plan: {str(e)}"
 
@@ -189,11 +207,12 @@ def register(mcp):
         Reads the current markdown plan tracker file to check the progress of the active task.
         """
         import os
+
         if not os.path.exists(workspace_path):
             return f"No active plan tracking file found at {workspace_path}."
-        
+
         try:
-            with open(workspace_path, 'r', encoding='utf-8') as f:
+            with open(workspace_path, "r", encoding="utf-8") as f:
                 content = f.read()
             return f"--- Current Plan Tracker ({workspace_path}) ---\n{content}"
         except Exception as e:

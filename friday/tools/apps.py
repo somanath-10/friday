@@ -11,13 +11,17 @@ import time
 import platform
 from pathlib import Path
 
+from friday.path_utils import safe_filename, workspace_dir, workspace_path
+
 OS = platform.system()  # "Darwin" | "Linux" | "Windows"
 
 
 def _workspace_dir() -> str:
-    base = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
-    Path(base).mkdir(parents=True, exist_ok=True)
-    return base
+    return str(workspace_dir())
+
+
+def _escape_applescript_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def register(mcp):
@@ -79,7 +83,7 @@ def register(mcp):
         """
         try:
             if OS == "Darwin":
-                script = f'tell application "{app_name}" to quit'
+                script = f'tell application "{_escape_applescript_string(app_name)}" to quit'
                 result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
             elif OS == "Windows":
                 # Try graceful taskkill first (no /F)
@@ -105,7 +109,7 @@ def register(mcp):
         """
         try:
             if OS == "Darwin":
-                script = f'tell application "{app_name}" to activate'
+                script = f'tell application "{_escape_applescript_string(app_name)}" to activate'
                 result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
             elif OS == "Windows":
                 ps_script = (
@@ -133,9 +137,9 @@ def register(mcp):
         try:
             if not filename:
                 filename = f"screenshot_{time.strftime('%Y%m%d_%H%M%S')}.png"
+            filename = safe_filename(filename, f"screenshot_{time.strftime('%Y%m%d_%H%M%S')}.png")
 
-            workspace = _workspace_dir()
-            save_path = os.path.join(workspace, filename)
+            save_path = str(workspace_path(filename))
 
             if OS == "Darwin":
                 result = subprocess.run(["screencapture", "-x", save_path], capture_output=True, text=True, timeout=10)
@@ -235,7 +239,11 @@ def register(mcp):
         try:
             if OS == "Darwin":
                 subtitle_part = f'subtitle "{subtitle}"' if subtitle else ""
-                script = f'display notification "{message}" with title "{title}" {subtitle_part}'
+                script = (
+                    f'display notification "{_escape_applescript_string(message)}" '
+                    f'with title "{_escape_applescript_string(title)}" '
+                    f'{subtitle_part and subtitle_part.replace(subtitle, _escape_applescript_string(subtitle))}'
+                ).strip()
                 result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
             elif OS == "Windows":
                 ps_script = (
@@ -267,13 +275,23 @@ def register(mcp):
         seconds: Number of seconds to wait. CONVERT: '5 minutes' = 300 seconds, '1 hour' = 3600 seconds.
         """
         try:
+            if seconds <= 0:
+                return "Timer duration must be greater than zero seconds."
+
             def _fire(secs: int, lbl: str):
                 time.sleep(secs)
                 try:
                     msg = f"Your {lbl} timer is done!"
                     if OS == "Darwin":
                         subprocess.run(
-                            ["osascript", "-e", f'display notification "{msg}" with title "⏰ Timer Done"'],
+                            [
+                                "osascript",
+                                "-e",
+                                (
+                                    f'display notification "{_escape_applescript_string(msg)}" '
+                                    'with title "Timer Done"'
+                                ),
+                            ],
                             timeout=5
                         )
                         subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"], timeout=5)
@@ -347,11 +365,16 @@ def register(mcp):
             if OS == "Darwin":
                 # Search common Mac app folders
                 search_paths = ["/Applications", "/System/Applications", "~/Applications"]
+                pattern = f"*{query}*.app"
                 for path in search_paths:
                     expanded = os.path.expanduser(path)
                     if os.path.exists(expanded):
-                        cmd = f"find {expanded} -maxdepth 2 -iname '*{query}*.app'"
-                        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+                        res = subprocess.run(
+                            ["find", expanded, "-maxdepth", "2", "-iname", pattern],
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
                         results.extend(res.stdout.strip().splitlines())
             elif OS == "Windows":
                 ps_script = (
@@ -361,8 +384,12 @@ def register(mcp):
                 res = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True, timeout=15)
                 results.extend(res.stdout.strip().splitlines())
             else:  # Linux
-                cmd = f"find /usr/share/applications /usr/bin -iname '*{query}*'"
-                res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+                res = subprocess.run(
+                    ["find", "/usr/share/applications", "/usr/bin", "-iname", f"*{query}*"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
                 results.extend(res.stdout.strip().splitlines())
 
             if not results:

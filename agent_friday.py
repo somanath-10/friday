@@ -23,6 +23,9 @@ from livekit.agents.llm import mcp
 # Plugins
 from livekit.plugins import google as lk_google, openai as lk_openai, sarvam, silero, deepgram as lk_deepgram
 
+# Load environment variables before reading any config constants.
+load_dotenv()
+
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
@@ -48,6 +51,7 @@ DEEPGRAM_STT_LANGUAGE = os.getenv("DEEPGRAM_STT_LANGUAGE", "en")
 
 MCP_SERVER_PORT        = int(os.getenv("MCP_SERVER_PORT", "8000"))
 MCP_SESSION_TIMEOUT    = int(os.getenv("MCP_SESSION_TIMEOUT", "30"))
+MAX_TOOL_STEPS         = int(os.getenv("FRIDAY_MAX_TOOL_STEPS", "8"))
 FRIDAY_GREETING        = os.getenv(
     "FRIDAY_GREETING",
     "Greetings boss, you're awake late at night today. What you up to?"
@@ -75,8 +79,6 @@ SYSTEM_PROMPT = _load_system_prompt()
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
-
-load_dotenv()
 
 logger = logging.getLogger("friday-agent")
 logger.setLevel(logging.INFO)
@@ -204,6 +206,7 @@ async def entrypoint(ctx: JobContext) -> None:
     session = AgentSession(
         turn_detection=_turn_detection(),
         min_endpointing_delay=_endpointing_delay(),
+        max_tool_steps=MAX_TOOL_STEPS,
     )
 
     await session.start(

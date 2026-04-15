@@ -8,12 +8,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
+from friday.path_utils import memory_dir
+
 
 class MemoryManager:
     def __init__(self):
-        memory_path = os.environ.get("FRIDAY_MEMORY_DIR", str(Path.home() / ".friday_memory"))
-        self.memory_dir = Path(memory_path)
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.memory_dir = memory_dir()
         self.user_profile_file = self.memory_dir / "user_profile.json"
         self.conversation_file = self.memory_dir / "conversation_history.json"
         self.context_file = self.memory_dir / "current_context.json"
