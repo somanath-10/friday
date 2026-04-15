@@ -30,20 +30,29 @@ from livekit.plugins import google as lk_google, openai as lk_openai, sarvam, si
 
 STT_PROVIDER       = os.getenv("STT_PROVIDER", "deepgram")
 LLM_PROVIDER       = os.getenv("LLM_PROVIDER", "gemini")
-TTS_PROVIDER       = os.getenv("TTS_PROVIDER", "openai")
+TTS_PROVIDER       = os.getenv("TTS_PROVIDER", "sarvam")
 
 GEMINI_LLM_MODEL   = os.getenv("GEMINI_LLM_MODEL", "gemini-2.5-flash")
 OPENAI_LLM_MODEL   = os.getenv("OPENAI_LLM_MODEL", "gpt-4o")
 
 OPENAI_TTS_MODEL   = os.getenv("OPENAI_TTS_MODEL", "tts-1")
 OPENAI_TTS_VOICE   = os.getenv("OPENAI_TTS_VOICE", "nova")
-TTS_SPEED           = float(os.getenv("TTS_SPEED", "1.15"))
+TTS_SPEED          = float(os.getenv("TTS_SPEED", "1.15"))
 
 SARVAM_TTS_LANGUAGE = os.getenv("SARVAM_TTS_LANGUAGE", "en-IN")
-SARVAM_TTS_SPEAKER  = os.getenv("SARVAM_TTS_SPEAKER", "rahul")
+SARVAM_TTS_SPEAKER  = os.getenv("SARVAM_TTS_SPEAKER", "ishita")
+SARVAM_TTS_MODEL    = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
+SARVAM_STT_MODEL    = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
 
-# MCP server running on Windows host
-MCP_SERVER_PORT = 8000
+DEEPGRAM_STT_MODEL    = os.getenv("DEEPGRAM_STT_MODEL", "nova-3")
+DEEPGRAM_STT_LANGUAGE = os.getenv("DEEPGRAM_STT_LANGUAGE", "en")
+
+MCP_SERVER_PORT        = int(os.getenv("MCP_SERVER_PORT", "8000"))
+MCP_SESSION_TIMEOUT    = int(os.getenv("MCP_SESSION_TIMEOUT", "30"))
+FRIDAY_GREETING        = os.getenv(
+    "FRIDAY_GREETING",
+    "Greetings boss, you're awake late at night today. What you up to?"
+)
 
 # ---------------------------------------------------------------------------
 # System prompt – F.R.I.D.A.Y.
@@ -267,16 +276,16 @@ def _mcp_server_url() -> str:
 
 def _build_stt():
     if STT_PROVIDER == "deepgram":
-        logger.info("STT → Deepgram Nova-3")
+        logger.info("STT → Deepgram (%s / lang=%s)", DEEPGRAM_STT_MODEL, DEEPGRAM_STT_LANGUAGE)
         return lk_deepgram.STT(
-            model="nova-3",
-            language="en",
+            model=DEEPGRAM_STT_MODEL,
+            language=DEEPGRAM_STT_LANGUAGE,
         )
     elif STT_PROVIDER == "sarvam":
-        logger.info("STT → Sarvam Saaras v3")
+        logger.info("STT → Sarvam (%s)", SARVAM_STT_MODEL)
         return sarvam.STT(
             language="unknown",
-            model="saaras:v3",
+            model=SARVAM_STT_MODEL,
             mode="transcribe",
             flush_signal=True,
             sample_rate=16000,
@@ -301,10 +310,10 @@ def _build_llm():
 
 def _build_tts():
     if TTS_PROVIDER == "sarvam":
-        logger.info("TTS → Sarvam Bulbul v3")
+        logger.info("TTS → Sarvam (%s / %s)", SARVAM_TTS_MODEL, SARVAM_TTS_SPEAKER)
         return sarvam.TTS(
             target_language_code=SARVAM_TTS_LANGUAGE,
-            model="bulbul:v3",
+            model=SARVAM_TTS_MODEL,
             speaker=SARVAM_TTS_SPEAKER,
             pace=TTS_SPEED,
         )
@@ -336,16 +345,16 @@ class FridayAgent(Agent):
                 mcp.MCPServerHTTP(
                     url=_mcp_server_url(),
                     transport_type="sse",
-                    client_session_timeout_seconds=30,
+                    client_session_timeout_seconds=MCP_SESSION_TIMEOUT,
                 ),
             ],
         )
 
     async def on_enter(self) -> None:
-        """Greet the user specifically for the late-night lab session."""
+        """Greet the user on session start."""
         await self.session.generate_reply(
             instructions=(
-                "Greet the user exactly with: 'Greetings boss, you're awake late at night today. What you up to?' "
+                f"Greet the user with: '{FRIDAY_GREETING}' "
                 "Maintain a helpful but dry tone."
             )
         )
