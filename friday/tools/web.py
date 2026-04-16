@@ -6,10 +6,8 @@ import httpx
 import xml.etree.ElementTree as ET
 import asyncio
 import re
-import json
 import os
 import urllib.parse
-from datetime import datetime
 
 SEED_FEEDS = [
     'https://feeds.bbci.co.uk/news/world/rss.xml',

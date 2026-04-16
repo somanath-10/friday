@@ -9,7 +9,6 @@ import os
 import threading
 import time
 import platform
-from pathlib import Path
 
 from friday.path_utils import safe_filename, workspace_dir, workspace_path
 
@@ -343,12 +342,12 @@ def register(mcp):
             else:  # Linux
                 result = subprocess.run(["wmctrl", "-l"], capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
-                    lines = [l.split(None, 3)[-1] for l in result.stdout.strip().splitlines() if l]
-                    return f"Open windows ({len(lines)}):\n" + "\n".join(f"  • {l}" for l in lines)
+                    lines = [line.split(None, 3)[-1] for line in result.stdout.strip().splitlines() if line]
+                    return f"Open windows ({len(lines)}):\n" + "\n".join(f"  • {line}" for line in lines)
                 # Fallback
                 result = subprocess.run(["ps", "-eo", "comm="], capture_output=True, text=True, timeout=10)
                 apps = sorted(set(result.stdout.strip().splitlines()))[:30]
-                return f"Running processes (top 30):\n" + "\n".join(f"  • {a}" for a in apps)
+                return "Running processes (top 30):\n" + "\n".join(f"  • {a}" for a in apps)
 
             return f"Could not list apps: {result.stderr.strip()}"
         except Exception as e:

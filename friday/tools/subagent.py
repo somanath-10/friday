@@ -3,12 +3,10 @@ Subagent delegation — allows the real-time voice agent to offload massive codi
 research, or multi-step tasks to an autonomous background worker.
 """
 
-import json
 import os
 import uuid
 import subprocess
 import sys
-from pathlib import Path
 
 from friday.path_utils import resolve_user_path, workspace_dir
 
@@ -96,7 +94,6 @@ def register(mcp):
                 content = "... [earlier log truncated] ...\n\n" + content[-3000:]
 
             # Check if completed
-            is_done = "-- Task Completed --" in content or "Fatal Subagent Error" in content
             status = "✅ COMPLETED" if "-- Task Completed --" in content else (
                 "❌ FAILED" if "Fatal Subagent Error" in content else "⏳ IN PROGRESS"
             )

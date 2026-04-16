@@ -69,13 +69,13 @@ def register(mcp):
                 vm = subprocess.check_output(["vm_stat"]).decode()
                 page_size = 4096
                 pages_active = int(next(
-                    (l.split(":")[1].strip().rstrip(".") for l in vm.splitlines() if "Pages active" in l), 0
+                    (line.split(":")[1].strip().rstrip(".") for line in vm.splitlines() if "Pages active" in line), 0
                 ))
                 telemetry["used_memory_gb"] = round(pages_active * page_size / (1024 ** 3), 2)
             elif OS == "Linux":
                 mem_info = open("/proc/meminfo").read()
-                total_kb = int(next(l.split()[1] for l in mem_info.splitlines() if l.startswith("MemTotal")))
-                avail_kb = int(next(l.split()[1] for l in mem_info.splitlines() if l.startswith("MemAvailable")))
+                total_kb = int(next(line.split()[1] for line in mem_info.splitlines() if line.startswith("MemTotal")))
+                avail_kb = int(next(line.split()[1] for line in mem_info.splitlines() if line.startswith("MemAvailable")))
                 telemetry["total_memory_gb"] = round(total_kb / (1024 ** 2), 1)
                 telemetry["used_memory_gb"] = round((total_kb - avail_kb) / (1024 ** 2), 1)
                 telemetry["free_memory_gb"] = round(avail_kb / (1024 ** 2), 1)
@@ -133,7 +133,7 @@ def register(mcp):
             if OS != "Windows":
                 output = [f"Top {top_n} processes (by CPU):"] + lines[:top_n + 1]
             else:
-                output = [f"Top processes (by CPU):"] + lines
+                output = ["Top processes (by CPU):"] + lines
 
             return "\n".join(output)
         except Exception as e:

@@ -15,6 +15,7 @@ from friday.tools import (
     weather,     # Real-time weather via Open-Meteo (no API key required)
     files,       # Download files, read PDFs, workspace management
     translate,   # Language translation via MyMemory (no API key required)
+    shell,       # Raw shell command execution
 )
 
 
@@ -31,3 +32,4 @@ def register_all_tools(mcp):
     weather.register(mcp)
     files.register(mcp)
     translate.register(mcp)
+    shell.register(mcp)

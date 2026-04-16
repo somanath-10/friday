@@ -2,7 +2,6 @@
 Weather tools — fetch real-time weather data using Open-Meteo (free, no API key required).
 """
 
-import json
 import httpx
 from datetime import datetime
 
@@ -98,7 +97,6 @@ def register(mcp):
                 # Today's high/low
                 today_max = daily.get("temperature_2m_max", [None])[0]
                 today_min = daily.get("temperature_2m_min", [None])[0]
-                today_rain = daily.get("precipitation_sum", [None])[0]
                 sunrise = daily.get("sunrise", [None])[0]
                 sunset = daily.get("sunset", [None])[0]
 

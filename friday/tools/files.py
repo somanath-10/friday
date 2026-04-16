@@ -4,10 +4,8 @@ open in Finder, and manage the workspace directory.
 """
 
 import os
-import json
 import subprocess
 import time
-import tempfile
 from pathlib import Path
 
 from friday.path_utils import resolve_user_path, safe_filename, workspace_dir, workspace_path
@@ -28,8 +26,6 @@ def register(mcp):
         """
         import httpx
         try:
-            workspace = workspace_dir()
-
             if not filename:
                 filename = url.split("/")[-1].split("?")[0] or f"download_{int(time.time())}"
             filename = safe_filename(filename, f"download_{int(time.time())}")

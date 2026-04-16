@@ -4,7 +4,6 @@ No API key required. Supports all major world languages.
 """
 
 import httpx
-import json
 import urllib.parse
 
 
@@ -63,7 +62,6 @@ def register(mcp):
                 return f"Translation failed (status {status}): {error_msg}"
 
             translated = data.get("responseData", {}).get("translatedText", "")
-            detected_lang = data.get("responseData", {}).get("match", "")
 
             if not translated:
                 return f"Translation returned empty. The API may not support {target_language}."

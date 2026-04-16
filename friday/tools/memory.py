@@ -3,10 +3,9 @@ Memory tools — persistent storage for user preferences, context, and conversat
 """
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any
 
 from friday.path_utils import memory_dir
 
@@ -210,7 +209,7 @@ def register(mcp):
             })
             
             memory_manager._write_json(memory_manager.core_memory_file, core_mem)
-            return f"Fact securely archived in core memory."
+            return "Fact securely archived in core memory."
         except Exception as e:
             return f"Error storing core memory: {str(e)}"
 

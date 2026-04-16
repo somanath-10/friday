@@ -5,9 +5,8 @@ Reasoning tools — mathematical computation, symbolic reasoning, data analysis,
 import json
 import math
 import statistics
-import re
-from typing import Dict, List, Any, Optional, Union
-from dataclasses import dataclass, asdict
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
 from enum import Enum
 
 

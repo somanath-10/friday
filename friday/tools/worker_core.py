@@ -6,11 +6,9 @@ Supports: coding, research, writing, and auto-detection tasks.
 import sys
 import os
 import httpx
-import json
 import time
 import subprocess
 import re
-from pathlib import Path
 
 TASK_SYSTEM_PROMPTS = {
     "coding": (
@@ -83,10 +81,14 @@ def main():
     custom_writing_prompt = os.environ.get("SUBAGENT_WRITING_PROMPT")
     custom_auto_prompt = os.environ.get("SUBAGENT_AUTO_PROMPT")
 
-    if custom_coding_prompt: TASK_SYSTEM_PROMPTS["coding"] = custom_coding_prompt
-    if custom_research_prompt: TASK_SYSTEM_PROMPTS["research"] = custom_research_prompt
-    if custom_writing_prompt: TASK_SYSTEM_PROMPTS["writing"] = custom_writing_prompt
-    if custom_auto_prompt: TASK_SYSTEM_PROMPTS["auto"] = custom_auto_prompt
+    if custom_coding_prompt:
+        TASK_SYSTEM_PROMPTS["coding"] = custom_coding_prompt
+    if custom_research_prompt:
+        TASK_SYSTEM_PROMPTS["research"] = custom_research_prompt
+    if custom_writing_prompt:
+        TASK_SYSTEM_PROMPTS["writing"] = custom_writing_prompt
+    if custom_auto_prompt:
+        TASK_SYSTEM_PROMPTS["auto"] = custom_auto_prompt
 
     system_prompt = TASK_SYSTEM_PROMPTS[task_type]
 
@@ -184,7 +186,7 @@ def main():
                 with open(report_path, "w", encoding="utf-8") as f:
                     f.write(report_content)
                 with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(f"**✅ Report written to `report.md`**\n\n-- Task Completed --\n")
+                    f.write("**✅ Report written to `report.md`**\n\n-- Task Completed --\n")
                 break
 
             # --- No code blocks found: check if it's a final answer ---
@@ -196,7 +198,7 @@ def main():
                 with open(output_path, "w", encoding="utf-8") as f:
                     f.write(f"# Task Output\n\n{ai_message}")
                 with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(f"**✅ Task answered directly. Saved to `output.md`**\n\n-- Task Completed --\n")
+                    f.write("**✅ Task answered directly. Saved to `output.md`**\n\n-- Task Completed --\n")
                 break
             else:
                 # Ask AI to continue or wrap up
