@@ -16,7 +16,9 @@ TASK_SYSTEM_PROMPTS = {
         "Write a Python script to solve the objective. "
         "Enclose Python code strictly in ```python ... ``` blocks. "
         "Your code will be immediately executed. If it fails, I'll send you the stderr and you must fix it. "
-        "Keep iterating until the code runs successfully."
+        "Keep iterating until the code runs successfully.\n"
+        "You have access to the F.R.I.D.A.Y SDK. You can `import friday.sdk as sdk` to do things like:\n"
+        "`sdk.search_web(query)`, `sdk.execute_shell(cmd)`, `sdk.spawn_subagent(objective, task_type)`."
     ),
     "research": (
         "You are an autonomous research worker. "
@@ -37,7 +39,9 @@ TASK_SYSTEM_PROMPTS = {
         "- If it requires code, write Python in ```python ... ``` blocks and they will be executed. "
         "- If it requires research or writing, produce a Markdown report in ```markdown ... ``` blocks. "
         "- If it requires both, do both. "
-        "Iterate and self-correct until the task is complete."
+        "Iterate and self-correct until the task is complete.\n"
+        "You have access to the F.R.I.D.A.Y SDK. You can `import friday.sdk as sdk` to do things like:\n"
+        "`sdk.search_web(query)`, `sdk.execute_shell(cmd)`, `sdk.spawn_subagent(objective, task_type)`."
     ),
 }
 
@@ -142,12 +146,18 @@ def main():
                     f.write(f"> Executing `sandbox_script_v{attempt}.py`...\n\n")
 
                 timeout = int(os.environ.get("PYTHON_EXEC_TIMEOUT", "120"))
+                # Add friday directory to PYTHONPATH
+                project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+                env = os.environ.copy()
+                env["PYTHONPATH"] = f"{project_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
+
                 sandbox_process = subprocess.run(
                     ["python3", script_path],
                     cwd=workspace_dir,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
+                    env=env
                 )
 
                 if sandbox_process.returncode == 0:

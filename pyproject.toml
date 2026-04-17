@@ -12,6 +12,7 @@ dependencies = [
     "pypdf",
     "python-dotenv",
     "pyautogui",
+    "playwright>=1.40.0"
 ]
 
 [project.scripts]

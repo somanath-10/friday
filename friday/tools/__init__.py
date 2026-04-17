@@ -11,11 +11,20 @@ from friday.tools import (
     memory,
     reasoning,
     subagent,
-    apps,        # macOS app launcher, screenshot, clipboard, timers, notifications
+    apps,        # macOS/Windows/Linux app launcher, screenshot, clipboard, timers, notifications
     weather,     # Real-time weather via Open-Meteo (no API key required)
     files,       # Download files, read PDFs, workspace management
     translate,   # Language translation via MyMemory (no API key required)
     shell,       # Raw shell command execution
+    browser,     # Headless Chromium automation via Playwright
+
+    finance,     # Stock prices, crypto, currency conversion (all free)
+    git_tool,    # Git operations: status, log, diff, commit, push, pull, clone
+    compression, # Zip/unzip archives
+    network,     # Ping, IP info, port check, DNS, traceroute
+    media,       # Volume control, audio playback
+    image_tool,  # AI image generation (Pollinations.ai), resize, convert
+    calendar_tool,  # Calendar events (.ics) and reminders
 )
 
 
@@ -33,3 +42,13 @@ def register_all_tools(mcp):
     files.register(mcp)
     translate.register(mcp)
     shell.register(mcp)
+    browser.register(mcp)
+
+    finance.register(mcp)
+    git_tool.register(mcp)
+    compression.register(mcp)
+    network.register(mcp)
+    media.register(mcp)
+    image_tool.register(mcp)
+    calendar_tool.register(mcp)
+

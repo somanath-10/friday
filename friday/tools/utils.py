@@ -6,6 +6,7 @@ import json
 import subprocess
 import tempfile
 import os
+import sys
 import base64
 import uuid
 
@@ -67,7 +68,7 @@ def register(mcp):
                 temp_file = f.name
 
             result = subprocess.run(
-                ['python3', temp_file],
+                [sys.executable, temp_file],
                 capture_output=True,
                 text=True,
                 timeout=effective_timeout,
@@ -138,17 +139,25 @@ def register(mcp):
         a third-party library.
         """
         try:
-            # Try uv pip first (faster), fall back to pip
-            for cmd in [['uv', 'pip', 'install', package_name], ['pip', 'install', package_name]]:
+            # Determine the .venv python/pip to avoid global installs
+            venv_python = os.path.join(
+                os.path.dirname(sys.executable), 'python'
+            ) if 'Scripts' not in sys.executable else sys.executable
+
+            # Prefer uv pip install into the current venv, then fall back to pip
+            for cmd in [
+                ['uv', 'pip', 'install', '--python', sys.executable, package_name],
+                [sys.executable, '-m', 'pip', 'install', package_name],
+            ]:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=60
+                    cmd, capture_output=True, text=True, timeout=120
                 )
                 if result.returncode == 0:
-                    return f"Successfully installed: {package_name}"
+                    return f"Successfully installed into .venv: {package_name}"
 
             return f"Failed to install {package_name}: {result.stderr.strip()}"
         except subprocess.TimeoutExpired:
-            return f"Installation of {package_name} timed out (60s)."
+            return f"Installation of {package_name} timed out (120s)."
         except Exception as e:
             return f"Error installing package: {str(e)}"
 
