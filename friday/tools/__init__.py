@@ -9,7 +9,6 @@ from friday.tools import (
     utils,
     planning,
     memory,
-    reasoning,
     subagent,
     apps,        # macOS/Windows/Linux app launcher, screenshot, clipboard, timers, notifications
     weather,     # Real-time weather via Open-Meteo (no API key required)
@@ -25,6 +24,7 @@ from friday.tools import (
     media,       # Volume control, audio playback
     image_tool,  # AI image generation (Pollinations.ai), resize, convert
     calendar_tool,  # Calendar events (.ics) and reminders
+    firecrawl_tool, # SOTA web scraping/research
 )
 
 
@@ -35,7 +35,6 @@ def register_all_tools(mcp):
     utils.register(mcp)
     planning.register(mcp)
     memory.register(mcp)
-    reasoning.register(mcp)
     subagent.register(mcp)
     apps.register(mcp)
     weather.register(mcp)
@@ -51,4 +50,5 @@ def register_all_tools(mcp):
     media.register(mcp)
     image_tool.register(mcp)
     calendar_tool.register(mcp)
+    firecrawl_tool.register(mcp)
 

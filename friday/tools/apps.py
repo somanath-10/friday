@@ -464,3 +464,21 @@ def register(mcp):
             return f"Pressed key: {key}"
         except Exception as e:
             return f"Error pressing key: {str(e)}"
+
+    @mcp.tool()
+    async def voice_filler(filler_type: str = "thinking") -> str:
+        """
+        Trigger a preemptive, short audio filler ('Thinking...', 'Looking that up...', etc.) 
+        to fill silence during long reasoning tasks. Part of F.R.I.D.A.Y's SOTA UX.
+        """
+        fillers = {
+            "thinking": "One moment, let me think about that...",
+            "researching": "I'm looking that up for you now, boss...",
+            "analyzing": "Analyzing the data now...",
+            "coding": "Drafting the code for you...",
+            "wait": "Just a second..."
+        }
+        text = fillers.get(filler_type, "One moment...")
+        # In a real LiveKit agent, this handles an 'immediate_speak' event.
+        # Here we return the intent to the system.
+        return f"PREEMPTIVE_VOICE_FILLER: {text}"

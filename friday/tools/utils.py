@@ -350,3 +350,57 @@ def register(mcp):
             return "\n".join(results)
         except Exception as e:
             return f"Error searching files: {str(e)}"
+    @mcp.tool()
+    def profile_dataset(file_path: str) -> str:
+        """
+        Quickly profile a CSV or JSON dataset without loading it into the LLM context. 
+        Returns headers, row count, and sample data.
+        """
+        try:
+            if not file_path.endswith('.csv') and not file_path.endswith('.json'):
+                return "Only CSV and JSON datasets are supported for basic profiling."
+                
+            resolved_path = resolve_user_path(file_path)
+            if not os.path.exists(resolved_path):
+                return f"File does not exist: {resolved_path}"
+                
+            if file_path.endswith('.csv'):
+                import csv
+                with open(resolved_path, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    try:
+                        headers = next(reader)
+                        sample_rows = [next(reader) for _ in range(3)]
+                        # Count remaining rows
+                        row_count = 1 + len(sample_rows) + sum(1 for _ in reader)
+                        return json.dumps({
+                            "type": "csv",
+                            "columns": headers,
+                            "total_rows": row_count,
+                            "sample_rows": sample_rows
+                        }, indent=2)
+                    except StopIteration:
+                        return "CSV file appears to be empty."
+            
+            elif file_path.endswith('.json'):
+                with open(resolved_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        sample = data[:3]
+                        keys = list(data[0].keys()) if len(data) > 0 and isinstance(data[0], dict) else []
+                        return json.dumps({
+                            "type": "json_array",
+                            "total_elements": len(data),
+                            "keys": keys,
+                            "sample": sample
+                        }, indent=2)
+                    elif isinstance(data, dict):
+                        return json.dumps({
+                            "type": "json_object",
+                            "keys": list(data.keys()),
+                            "key_count": len(data.keys()),
+                            "sample_keys": {k: data[k] for k in list(data.keys())[:3]}
+                        }, indent=2)
+                        
+        except Exception as e:
+            return f"Error profiling dataset: {str(e)}"

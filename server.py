@@ -10,6 +10,7 @@ from friday.tools import register_all_tools
 from friday.prompts import register_all_prompts
 from friday.resources import register_all_resources
 from friday.config import config
+from friday.web_ui import register_web_routes
 
 load_dotenv()
 
@@ -42,6 +43,7 @@ mcp = FastMCP(
 register_all_tools(mcp)
 register_all_prompts(mcp)
 register_all_resources(mcp)
+register_web_routes(mcp)
 
 
 def main():

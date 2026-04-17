@@ -61,6 +61,7 @@ uv run friday
 ```
 
 Starts the FastMCP server on `http://127.0.0.1:8000/sse`. The voice agent connects here to fetch its tools.
+It also serves a connection landing page at `http://127.0.0.1:8000/` so you have a simple place to start the session flow.
 
 **Terminal 2 — Voice agent**
 
@@ -76,7 +77,7 @@ Starts the LiveKit voice agent in **dev mode** — it joins a LiveKit room and b
 
 | Command | Entry point | What it does |
 |---------|------------|--------------|
-| `uv run friday` | `server.py → main()` | Launches the **FastMCP server** over SSE transport on port 8000. This is the "brain backend" — it registers all tools, prompts, and resources that the LLM can call. |
+| `uv run friday` | `server.py → main()` | Launches the **FastMCP server** over SSE transport on port 8000. This is the "brain backend" — it registers all tools, prompts, resources, and a lightweight landing page at `/` for starting the connection flow. |
 | `uv run friday_voice` | `agent_friday.py → dev()` | Launches the **LiveKit voice agent**. It builds the STT / LLM / TTS pipeline, connects to your LiveKit room, and wires up the MCP server as a tool source. The `dev()` wrapper auto-injects the `dev` CLI flag so you don't have to type it manually. |
 
 > Both processes must run **simultaneously**. The voice agent calls the MCP server in real time whenever it needs a tool (e.g. fetching news).

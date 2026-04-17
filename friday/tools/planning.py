@@ -8,6 +8,8 @@ import json
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
+import os
+from friday.tools.llm_utils import call_llm
 
 
 class TaskStatus(Enum):
@@ -29,191 +31,130 @@ class TaskStep:
     error: str | None = None
 
 
-def _step(
-    step_id: str,
-    description: str,
-    tool_needed: str,
-    parameters: dict[str, Any],
-    dependencies: list[str] | None = None,
-) -> TaskStep:
-    return TaskStep(
-        id=step_id,
-        description=description,
-        tool_needed=tool_needed,
-        parameters=parameters,
-        dependencies=dependencies or [],
+async def build_task_decomposition(request: str) -> dict[str, Any]:
+    """
+    Dynamically decomposes a complex request using the internal LLM reasoning engine.
+    This replaces the old hardcoded templates with SOTA agentic planning.
+    """
+    system_prompt = (
+        "You are F.R.I.D.A.Y.'s Strategic Planning Engine. "
+        "Your goal is to decompose a complex user request into a sequence of atomic, actionable steps. "
+        "Each step must use ONE tool from the following available set: "
+        "web_search, fetch_url, calculate, list_files, read_file, write_file, "
+        "run_shell, git_op, zip_files, etc.\n\n"
+        "Output MUST be a valid JSON object with the following structure:\n"
+        "{\n"
+        "  \"decomposition\": [\n"
+        "    {\n"
+        "      \"id\": \"step1\",\n"
+        "      \"description\": \"Brief human-readable goal\",\n"
+        "      \"tool_needed\": \"tool_name\",\n"
+        "      \"parameters\": { \"param1\": \"val1\" },\n"
+        "      \"dependencies\": []\n"
+        "    }\n"
+        "  ],\n"
+        "  \"summary\": \"Overall strategy overview\"\n"
+        "}"
     )
 
+    prompt = f"Decompose this request into a logical, multi-step plan: {request}"
+    
+    try:
+        response_text = await call_llm(prompt, system_prompt, json_mode=True)
+        plan_data = json.loads(response_text)
+        
+        # Ensure 'next_action' is present
+        if "decomposition" in plan_data and plan_data["decomposition"]:
+            plan_data["next_action"] = plan_data["decomposition"][0]["description"]
+        else:
+            plan_data["next_action"] = "No decomposition required"
+            
+        return plan_data
+    except Exception as e:
+        return {
+            "error": f"Dynamic planning failed: {str(e)}",
+            "decomposition": [],
+            "summary": "Falling back to direct execution.",
+            "next_action": "Execute directly"
+        }
 
-def build_task_decomposition(request: str) -> dict[str, Any]:
-    request_lower = request.lower()
-    steps: list[TaskStep]
 
-    if "analyze" in request_lower and any(word in request_lower for word in ("code", "project", "repo")):
-        steps = [
-            _step(
-                "step1",
-                "Map the repository structure and identify likely entrypoints",
-                "list_directory_tree",
-                {"path": ".", "max_depth": 3},
-            ),
-            _step(
-                "step2",
-                "Read the main project configuration and documentation",
-                "get_file_contents",
-                {"file_path": "pyproject.toml"},
-                ["step1"],
-            ),
-            _step(
-                "step3",
-                "Search the codebase for the feature, bug, or area of interest",
-                "search_in_files",
-                {"directory": ".", "keyword": request},
-                ["step1"],
-            ),
-            _step(
-                "step4",
-                "Inspect the most relevant implementation blocks in detail",
-                "read_file_snippet",
-                {"file_path": "agent_friday.py", "start_line": 1, "end_line": 200},
-                ["step2", "step3"],
-            ),
-            _step(
-                "step5",
-                "Run a lightweight verification command once the review is complete",
-                "run_shell_command",
-                {"command": "python -m compileall ."},
-                ["step4"],
-            ),
-        ]
-    elif any(word in request_lower for word in ("research", "search", "latest", "find information")):
-        steps = [
-            _step(
-                "step1",
-                "Search the web for broad, current information",
-                "search_web",
-                {"query": request},
-            ),
-            _step(
-                "step2",
-                "Search for technical references if the request is implementation-oriented",
-                "search_code",
-                {"query": request},
-            ),
-            _step(
-                "step3",
-                "Open and summarize the most relevant source from the search results",
-                "fetch_url",
-                {"url": "<top_result_url>"},
-                ["step1", "step2"],
-            ),
-        ]
-    elif any(word in request_lower for word in ("create", "build", "implement", "make")):
-        steps = [
-            _step(
-                "step1",
-                "Inspect the current workspace before making changes",
-                "list_directory_tree",
-                {"path": ".", "max_depth": 3},
-            ),
-            _step(
-                "step2",
-                "Draft or update the target file(s) required for the implementation",
-                "write_file",
-                {"file_path": "workspace/implementation.txt", "content": "<implementation goes here>"},
-                ["step1"],
-            ),
-            _step(
-                "step3",
-                "Run a validation command or script against the new implementation",
-                "run_shell_command",
-                {"command": "python -m compileall ."},
-                ["step2"],
-            ),
-        ]
-    else:
-        steps = [
-            _step(
-                "step1",
-                "Gather the most relevant starting context for the request",
-                "search_web",
-                {"query": request},
+async def decompose_task(request: str) -> str:
+    """
+    Break down a complex user request into actionable steps using F.R.I.D.A.Y's dynamic reasoning engine.
+    Identifies required subtasks, parameters, and dependencies automatically.
+    """
+    result = await build_task_decomposition(request)
+    return json.dumps(result, indent=2)
+
+
+async def reflect_on_step(step_description: str, tool_output: str) -> str:
+    """
+    Analyze the output of a completed task step to determine if the goal was met or if a pivot is needed.
+    Part of F.R.I.D.A.Y's SOTA self-correction loop.
+    """
+    system_prompt = (
+        "You are F.R.I.D.A.Y.'s Reflection and Error Correction engine. "
+        "Analyze the tool output versus the step's goal. "
+        "Determine if: 1. Goal met, 2. Partial success (adjust next step), or 3. Failure (pivot needed). "
+        "Output your analysis and a recommended next course of action."
+    )
+    prompt = f"Goal: {step_description}\nTool Output: {tool_output}"
+    
+    return await call_llm(prompt, system_prompt)
+
+
+async def track_plan_in_workspace(plan_json: str, workspace_path: str | None = None) -> str:
+    """
+    Takes the JSON output from decompose_task and writes it as a Markdown checklist to the workspace.
+    This provides a tangible, persistent tracker for long-running or complex tasks F.R.I.D.A.Y handles.
+    """
+    try:
+        if workspace_path is None:
+            base_dir = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
+            workspace_path = os.path.join(base_dir, "current_plan.md")
+
+        plan_data = json.loads(plan_json)
+        steps = plan_data.get("decomposition", [])
+
+        os.makedirs(os.path.dirname(os.path.abspath(workspace_path)), exist_ok=True)
+
+        lines = ["# F.R.I.D.A.Y Task Execution Plan\n"]
+        for step in steps:
+            lines.append(
+                f"- [ ] **Step {step['id']}**: {step['description']} "
+                f"(Tool: `{step['tool_needed']}`)"
             )
-        ]
 
-    steps_data = []
-    for step in steps:
-        step_dict = asdict(step)
-        step_dict["status"] = step.status.value
-        steps_data.append(step_dict)
+        with open(workspace_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
 
-    return {
-        "decomposition": steps_data,
-        "summary": f"Broken down into {len(steps)} actionable steps",
-        "next_action": steps_data[0]["description"] if steps_data else "No action required",
-    }
+        return (
+            f"Plan successfully tracked. Checklist written to {os.path.abspath(workspace_path)}. "
+            "Please read / update this file to track your task."
+        )
+
+    except Exception as e:
+        return f"Error tracking plan: {str(e)}"
+
+
+async def monitor_progress(workspace_path: str = "workspace/current_plan.md") -> str:
+    """
+    Reads the current markdown plan tracker file to check the progress of the active task.
+    """
+    if not os.path.exists(workspace_path):
+        return f"No active plan tracking file found at {workspace_path}."
+
+    try:
+        with open(workspace_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return f"--- Current Plan Tracker ({workspace_path}) ---\n{content}"
+    except Exception as e:
+        return f"Error reading tracker: {str(e)}"
 
 
 def register(mcp):
-
-    @mcp.tool()
-    async def decompose_task(request: str) -> str:
-        """
-        Break down a complex user request into actionable steps.
-        Analyzes the request and identifies required subtasks, tools needed, and dependencies.
-        Use this when the user asks for something complex that requires multiple operations.
-        """
-        return json.dumps(build_task_decomposition(request), indent=2)
-
-    @mcp.tool()
-    async def track_plan_in_workspace(plan_json: str, workspace_path: str | None = None) -> str:
-        """
-        Takes the JSON output from decompose_task and writes it as a Markdown checklist to the workspace.
-        This provides a tangible, persistent tracker for long-running or complex tasks F.R.I.D.A.Y handles.
-        """
-        import os
-
-        try:
-            if workspace_path is None:
-                base_dir = os.environ.get("FRIDAY_WORKSPACE_DIR", "workspace")
-                workspace_path = os.path.join(base_dir, "current_plan.md")
-
-            plan_data = json.loads(plan_json)
-            steps = plan_data.get("decomposition", [])
-
-            os.makedirs(os.path.dirname(os.path.abspath(workspace_path)), exist_ok=True)
-
-            lines = ["# F.R.I.D.A.Y Task Execution Plan\n"]
-            for step in steps:
-                lines.append(
-                    f"- [ ] **Step {step['id']}**: {step['description']} "
-                    f"(Tool: `{step['tool_needed']}`)"
-                )
-
-            with open(workspace_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines))
-
-            return (
-                f"Plan successfully tracked. Checklist written to {os.path.abspath(workspace_path)}. "
-                "Please read / update this file to track your task."
-            )
-
-        except Exception as e:
-            return f"Error tracking plan: {str(e)}"
-
-    @mcp.tool()
-    async def monitor_progress(workspace_path: str = "workspace/current_plan.md") -> str:
-        """
-        Reads the current markdown plan tracker file to check the progress of the active task.
-        """
-        import os
-
-        if not os.path.exists(workspace_path):
-            return f"No active plan tracking file found at {workspace_path}."
-
-        try:
-            with open(workspace_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            return f"--- Current Plan Tracker ({workspace_path}) ---\n{content}"
-        except Exception as e:
-            return f"Error reading tracker: {str(e)}"
+    mcp.tool()(decompose_task)
+    mcp.tool()(reflect_on_step)
+    mcp.tool()(track_plan_in_workspace)
+    mcp.tool()(monitor_progress)

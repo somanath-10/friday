@@ -1,0 +1,689 @@
+{
+  "run_id": "20260417_165535",
+  "test_root": "C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535",
+  "counts": {
+    "pass": 110,
+    "fail": 2,
+    "skip": 1
+  },
+  "results": [
+    {
+      "name": "resource.server_info",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Friday MCP Server\nA Tony Stark-inspired AI assistant.\nBuilt with FastMCP."
+    },
+    {
+      "name": "prompt.summarize",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Summarize the following text concisely:\n\nhello"
+    },
+    {
+      "name": "prompt.explain_code",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Explain the following Python code in plain English, step by step:\n\n```python\nprint(1)\n```"
+    },
+    {
+      "name": "system.get_current_time",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Current time: Friday, April 17, 2026 at 04:55:37 PM\nISO 8601: 2026-04-17T16:55:37.805906"
+    },
+    {
+      "name": "system.get_system_telemetry",
+      "status": "pass",
+      "mode": "live",
+      "detail": "{\"os\": \"Windows\", \"os_version\": \"10.0.26200\", \"machine\": \"AMD64\", \"python_version\": \"3.11.14\", \"cpu_cores\": 16, \"cpu_load_pct\": 23.0, \"thermal_status\": \"NOMINAL\", \"total_memory_gb\": 15.7, \"free_memory_gb\": 3.7, \"used_memory_gb\": 12.0, \"storage_total_gb\": 425, \"storage_used_gb\": 279, \"storage_free_gb\": 146}"
+    },
+    {
+      "name": "system.list_running_processes",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Top processes (by CPU):\nName                          CPU WorkingSet\n----                          --- ----------\nOneDrive.Sync.Service 1287.453125  138506240\nmsedge                 649.484375  210399232\nmsedge                 576.796875  293711872\nCode                    324.71875  299900928\nmsedge                  294.28125  249745408\nCode                    225.46875  298680320\nexplorer               199.390625  369971200\nipf_helper             160.234375    7307264\nmsedge                 154... [truncated]"
+    },
+    {
+      "name": "system.kill_process",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Process '23468' terminated."
+    },
+    {
+      "name": "system.get_environment_info",
+      "status": "pass",
+      "mode": "live",
+      "detail": "=== System Environment ===\nos: Windows 10\nos_version: 10.0.26200\nmachine: AMD64\nhostname: DESKTOP-6UPV305\npython: 3.11.14\nuser: somu\nhome: C:\\Users\\soman\nworkspace: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\nshell: C:\\WINDOWS\\system32\\cmd.exe"
+    },
+    {
+      "name": "utils.format_json",
+      "status": "pass",
+      "mode": "live",
+      "detail": "{\n  \"a\": 1\n}"
+    },
+    {
+      "name": "utils.word_count",
+      "status": "pass",
+      "mode": "live",
+      "detail": "{\"characters\": 11, \"words\": 2, \"lines\": 2}"
+    },
+    {
+      "name": "utils.execute_python_code",
+      "status": "pass",
+      "mode": "live",
+      "detail": "hello from python"
+    },
+    {
+      "name": "utils.get_file_contents",
+      "status": "pass",
+      "mode": "live",
+      "detail": "alpha\nbeta keyword\ngamma\n"
+    },
+    {
+      "name": "utils.write_file",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Written 0.02 KB to: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\written.txt"
+    },
+    {
+      "name": "utils.install_package",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Successfully installed into .venv: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\localpkg"
+    },
+    {
+      "name": "utils.run_shell_command",
+      "status": "pass",
+      "mode": "live",
+      "detail": "friday-shell"
+    },
+    {
+      "name": "utils.encode_base64",
+      "status": "pass",
+      "mode": "live",
+      "detail": "RnJpZGF5"
+    },
+    {
+      "name": "utils.decode_base64",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Friday"
+    },
+    {
+      "name": "utils.start_background_process",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Background task started. ID: da326eb9\nLog: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\bg_task_da326eb9.log"
+    },
+    {
+      "name": "utils.check_process_status",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Task da326eb9 COMPLETED (exit code 0).\nOutput:\ndone\n"
+    },
+    {
+      "name": "utils.read_file_snippet",
+      "status": "pass",
+      "mode": "live",
+      "detail": "--- C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\sample.txt (Lines 2-3) ---\nbeta keyword\ngamma\n"
+    },
+    {
+      "name": "utils.list_directory_tree",
+      "status": "pass",
+      "mode": "live",
+      "detail": "workspace/\n  bg_task_da326eb9.log\n  data.csv\n  data.json\n  sample.pdf\n  sample.png\n  sample.txt\n  silent.wav\n  written.txt"
+    },
+    {
+      "name": "utils.search_in_files",
+      "status": "pass",
+      "mode": "live",
+      "detail": "C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\sample.txt:2: beta keyword"
+    },
+    {
+      "name": "utils.profile_dataset_csv",
+      "status": "pass",
+      "mode": "live",
+      "detail": "{\n  \"type\": \"csv\",\n  \"columns\": [\n    \"name\",\n    \"score\"\n  ],\n  \"total_rows\": 4,\n  \"sample_rows\": [\n    [\n      \"Alice\",\n      \"10\"\n    ],\n    [\n      \"Bob\",\n      \"20\"\n    ],\n    [\n      \"Cara\",\n      \"30\"\n    ]\n  ]\n}"
+    },
+    {
+      "name": "utils.profile_dataset_json",
+      "status": "pass",
+      "mode": "live",
+      "detail": "{\n  \"type\": \"json_array\",\n  \"total_elements\": 2,\n  \"keys\": [\n    \"id\",\n    \"name\"\n  ],\n  \"sample\": [\n    {\n      \"id\": 1,\n      \"name\": \"Ada\"\n    },\n    {\n      \"id\": 2,\n      \"name\": \"Bob\"\n    }\n  ]\n}"
+    },
+    {
+      "name": "planning.track_plan_in_workspace",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Plan successfully tracked. Checklist written to C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\plan.md. Please read / update this file to track your task."
+    },
+    {
+      "name": "planning.monitor_progress",
+      "status": "pass",
+      "mode": "live",
+      "detail": "--- Current Plan Tracker (C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\plan.md) ---\n# F.R.I.D.A.Y Task Execution Plan\n\n- [ ] **Step step1**: Do thing (Tool: `tool`)"
+    },
+    {
+      "name": "planning.decompose_task",
+      "status": "pass",
+      "mode": "live",
+      "detail": "{\n  \"decomposition\": [\n    {\n      \"id\": \"step1\",\n      \"description\": \"Create a new file for the script\",\n      \"tool_needed\": \"write_file\",\n      \"parameters\": {\n        \"filename\": \"hello_world.py\",\n        \"content\": \"\"\n      },\n      \"dependencies\": []\n    },\n    {\n      \"id\": \"step2\",\n      \"description\": \"Write a 'Hello, World!' message into the script file\",\n      \"tool_needed\": \"write_file\",\n      \"parameters\": {\n        \"filename\": \"hello_world.py\",\n        \"content\": \"print('Hello, Wo... [truncated]"
+    },
+    {
+      "name": "planning.reflect_on_step",
+      "status": "pass",
+      "mode": "live",
+      "detail": "*   **Analysis:** The goal was to \"Print hello\". The tool output shows \"Output: hello\", which directly fulfills the specified goal.\n*   **Outcome:** Goal met.\n*   **Recommended next course of action:** Proceed to the next high-level step."
+    },
+    {
+      "name": "memory.store_core_fact",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Core fact securely archived in preference."
+    },
+    {
+      "name": "memory.update_semantic_context",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Semantic context updated: active_project"
+    },
+    {
+      "name": "memory.get_recent_history",
+      "status": "pass",
+      "mode": "live",
+      "detail": "[]"
+    },
+    {
+      "name": "memory.query_agentic_memory",
+      "status": "pass",
+      "mode": "live",
+      "detail": "User likes masala chai."
+    },
+    {
+      "name": "memory.synthesize_knowledge",
+      "status": "pass",
+      "mode": "live",
+      "detail": "New knowledge synthesized: Local testing tools demonstrated high reliability and functionality for the 'Ran tests' task, with the majority working as expected."
+    },
+    {
+      "name": "subagent.delegate_to_subagent",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Mark IV Subagent dispatched! (ID: dbbfd0f7, Type: writing)\nWorking directory: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\subagent_dbbfd0f7\nProgress log: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\subagent_dbbfd0f7/subagent_log.md\nThe worker will auto-correct its own errors and iterate until done."
+    },
+    {
+      "name": "subagent.check_subagent_progress",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Subagent Status: \u2705 COMPLETED\nWorkspace: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\subagent_dbbfd0f7\n\n# Mark IV Autonomous Subagent\n**Objective:** Write a short markdown note saying hello from FRIDAY.\n**Task Type:** writing\n**Started:** 2026-04-17 16:56:03\n\n## Attempt 1 \u2014 16:56:03\n\n**AI Response:**\n\n```markdown\nHello from FRIDAY!\n```\n\n**\u2705 Report written to `report.md`**\n\n-- Task Completed --\n"
+    },
+    {
+      "name": "apps.open_application",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Launched notepad successfully using native OS launcher."
+    },
+    {
+      "name": "apps.focus_application",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Focused 'notepad' successfully."
+    },
+    {
+      "name": "apps.take_screenshot",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Screenshot saved to: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\workflow_screenshot.png"
+    },
+    {
+      "name": "apps.get_clipboard_before_set",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Clipboard contents:\n\\documentclass[letterpaper,10pt]{article}\n\n\\usepackage[empty]{fullpage}\n\\usepackage{titlesec}\n\\usepackage{enumitem}\n\\usepackage[hidelinks]{hyperref}\n\\usepackage{fancyhdr}\n\\usepackage[english]{babel}\n\\usepackage{tabularx}\n\\usepackage{latexsym}\n\\input{glyphtounicode}\n\n\\pagestyle{fancy}\n\\fancyhf{}\n\\renewcommand{\\headrulewidth}{0pt}\n\\renewcommand{\\footrulewidth}{0pt}\n\n% Margins\n\\addtolength{\\oddsidemargin}{-0.52in}\n\\addtolength{\\evensidemargin}{-0.52in}\n\\addtolength{\\textwidth}{1... [truncated]"
+    },
+    {
+      "name": "apps.set_clipboard",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Copied 25 characters to clipboard."
+    },
+    {
+      "name": "apps.get_clipboard_after_set",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Clipboard contents:\nFRIDAY workflow clipboard\n"
+    },
+    {
+      "name": "apps.send_notification",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Notification sent: 'FRIDAY Test' \u2014 Workflow suite notification"
+    },
+    {
+      "name": "apps.set_timer",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Timer set for 1s \u2014 'Workflow Timer'. You'll get a notification when done."
+    },
+    {
+      "name": "apps.get_running_apps",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Running apps (6):\n  \u2022 ApplicationFrameHost\n  \u2022 Code\n  \u2022 Notepad\n  \u2022 SystemSettings\n  \u2022 TextInputHost\n  \u2022 msedge"
+    },
+    {
+      "name": "apps.search_local_apps",
+      "status": "pass",
+      "mode": "live",
+      "detail": "No applications found matching 'notepad'."
+    },
+    {
+      "name": "apps.gui_get_mouse_pos",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Current mouse position: "
+    },
+    {
+      "name": "apps.gui_click",
+      "status": "pass",
+      "mode": "mocked",
+      "detail": "Synthesized left click at (0, 0)."
+    },
+    {
+      "name": "apps.press_key",
+      "status": "pass",
+      "mode": "mocked",
+      "detail": "Pressed key: ESC"
+    },
+    {
+      "name": "apps.voice_filler",
+      "status": "pass",
+      "mode": "live",
+      "detail": "PREEMPTIVE_VOICE_FILLER: One moment, let me think about that..."
+    },
+    {
+      "name": "apps.close_application",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Closed notepad successfully."
+    },
+    {
+      "name": "files.download_file",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Downloaded 'downloaded_hello.txt' (0.0 KB) \u2192 C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\downloaded_hello.txt"
+    },
+    {
+      "name": "files.read_pdf",
+      "status": "pass",
+      "mode": "live",
+      "detail": "--- Page 1 ---\nHello Friday PDF"
+    },
+    {
+      "name": "files.create_document",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Created 'doc.txt' (0.01 KB) \u2192 C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\docs\\doc.txt"
+    },
+    {
+      "name": "files.list_workspace_files",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Workspace: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\n\nFiles (14):\n  bg_task_da326eb9.log  (6 B)\n  data.csv  (39 B)\n  data.json  (52 B)\n  downloaded_hello.txt  (23 B)\n  plan.md  (82 B)\n  sample.pdf  (590 B)\n  sample.png  (613 B)\n  sample.txt  (28 B)\n  silent.wav  (4.3 KB)\n  workflow_screenshot.png  (138.8 KB)\n  written.txt  (16 B)\n  docs\\doc.txt  (9 B)\n  subagent_dbbfd0f7\\report.md  (18 B)\n  subagent_dbbfd0f7\\subagent_log.md  (313 B)"
+    },
+    {
+      "name": "files.open_in_finder",
+      "status": "fail",
+      "mode": "live",
+      "detail": "Error opening Finder: [WinError 2] The system cannot find the file specified"
+    },
+    {
+      "name": "files.append_to_file",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Appended 5 characters to C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\docs\\doc.txt"
+    },
+    {
+      "name": "files.delete_workspace_file",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Deleted 'delete_me.txt' from workspace."
+    },
+    {
+      "name": "shell.execute_shell_command",
+      "status": "pass",
+      "mode": "live",
+      "detail": "STDOUT:\nhello-shell-tool\n"
+    },
+    {
+      "name": "browser.browser_navigate",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Navigated to http://127.0.0.1:59572/index.html. Page title: "
+    },
+    {
+      "name": "browser.browser_type",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Typed text into '#name' successfully."
+    },
+    {
+      "name": "browser.browser_click",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Clicked element matching '#submit' successfully."
+    },
+    {
+      "name": "browser.browser_read_page",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Page Content (Visual Tags):\nH1 | FRIDAY Browser Test\nP | Alice\nBUTTON | Submit\nA | hello\nUse elements to formulate CSS selectors."
+    },
+    {
+      "name": "browser.browser_close",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Browser session closed successfully."
+    },
+    {
+      "name": "web.fetch_url",
+      "status": "pass",
+      "mode": "live",
+      "detail": "FRIDAY Browser Test Pending Submit hello"
+    },
+    {
+      "name": "web.search_web",
+      "status": "fail",
+      "mode": "live",
+      "detail": "Search yielded no clear results for 'OpenAI'. Try rephrasing or use fetch_url with a specific URL."
+    },
+    {
+      "name": "web.search_code",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Code/Tech search: 'python list comprehension'\n\n1. **Microsoft Azure Official Site - Run Python Apps In Azure**\n   Develop, Deploy, and Scale Python Apps in Azure With Built-in AI and Data Services. Develop and Deploy Apps With Python On Azure and Go Further With AI and Data Science.\n   https://duckduckgo.com/y.js?ad_domain=microsoft.com&ad_provider=bingv7aa&ad_type=txad&click_metadata=ZHsU9VzqfoxhMtaLnn1vMrV1uXeYZL0AtOOxGHC3hHFJilm9caREkF15t3Jq1tRt2uDtkNb4X6i1sUDwFOkfEHOzUvG8YLgfpXWqo9MKvR48toxT... [truncated]"
+    },
+    {
+      "name": "web.get_world_news",
+      "status": "pass",
+      "mode": "live",
+      "detail": "### GLOBAL NEWS BRIEFING (LIVE)\n\n**[BBCI]** Trump's Lebanon ceasefire takes Israel by surprise\nFew Israelis see this truce as a way out of the conflict with Hezbollah, the BBC's Lucy Williamson writes....\nLink: https://www.bbc.com/news/articles/cje4pn575jgo?at_medium=RSS&at_campaign=rss\n\n**[BBCI]** Singer D4vd arrested on suspicion of murdering teenage girl\nThe remains of 14-year-old Celeste Rivas Hernandez were found in the singer's car last year....\nLink: https://www.bbc.com/news/articles/c20d... [truncated]"
+    },
+    {
+      "name": "web.open_world_monitor",
+      "status": "pass",
+      "mode": "mocked",
+      "detail": "Displaying the World Monitor on your primary screen now, sir."
+    },
+    {
+      "name": "web.open_url",
+      "status": "pass",
+      "mode": "mocked",
+      "detail": "Opened https://example.com in your browser."
+    },
+    {
+      "name": "weather.get_weather",
+      "status": "pass",
+      "mode": "live",
+      "detail": "=== WEATHER: MUMBAI, MAHARASHTRA, INDIA ===\nCondition    : Overcast\nTemperature  : 29.9\u00b0C (feels like 34.5\u00b0C)\nToday H/L    : 30.1\u00b0C / 26.9\u00b0C\nHumidity     : 77%\nWind         : 16.3 km/h\nCloud Cover  : 100%\nSunrise/Sunset: 06:19 AM / 06:56 PM\n\n3-Day Forecast:\n  Friday, Apr 17: Overcast \u2014 High 30.1\u00b0C / Low 26.9\u00b0C\n  Saturday, Apr 18: Overcast \u2014 High 30.9\u00b0C / Low 28.6\u00b0C\n  Sunday, Apr 19: Partly cloudy \u2014 High 30.9\u00b0C / Low 29.2\u00b0C"
+    },
+    {
+      "name": "translate.translate_text",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Translation (Spanish):\nHola mundo"
+    },
+    {
+      "name": "translate.detect_language",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Detected language: French (code: fr)"
+    },
+    {
+      "name": "finance.get_stock_price",
+      "status": "pass",
+      "mode": "live",
+      "detail": "=== Apple Inc. (AAPL) ===\nPrice     : USD 263.4\nChange    : -3.03 (-1.14%)\nDay H/L   : 267.16 / 261.27\nPrev Close: 266.43\nVolume    : 43,105,688"
+    },
+    {
+      "name": "finance.get_crypto_price",
+      "status": "pass",
+      "mode": "live",
+      "detail": "=== BITCOIN (BTC-USD) \u2014 via Yahoo Finance ===\nPrice     : $75,499.5400\n24h Change: +0.46%\nPrev Close: $75,151.9900"
+    },
+    {
+      "name": "finance.convert_currency",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Currency Conversion:\n  10.00 USD = 932.50 INR\n  Exchange Rate: 1 USD = 93.2500 INR"
+    },
+    {
+      "name": "finance.get_market_summary",
+      "status": "pass",
+      "mode": "live",
+      "detail": "=== GLOBAL MARKET SUMMARY ===\n  S&P 500     :   7,041.28  +0.26%\n  NASDAQ      :  24,102.70  +0.36%\n  Dow Jones   :  48,578.72  +0.24%\n  Nifty 50    :  24,353.55  +0.65%\n  Sensex      :  78,493.54  +0.65%"
+    },
+    {
+      "name": "git.git_status",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Git Status (C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\git_source):\n## master...origin/master"
+    },
+    {
+      "name": "git.git_log",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Commit History (C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\git_source) \u2014 Last 5:\nc0eecef Workflow Tester 77 seconds ago - initial commit"
+    },
+    {
+      "name": "git.git_diff",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Git Diff:\ndiff --git a/readme.txt b/readme.txt\nindex e79c5e8..5c4c471 100644\n--- a/readme.txt\n+++ b/readme.txt\n@@ -1 +1,2 @@\n initial\n+second"
+    },
+    {
+      "name": "git.git_commit",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Committed: [master c38ff7d] second commit\n 1 file changed, 1 insertion(+)"
+    },
+    {
+      "name": "git.git_branch",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Branches:\n* master\n  remotes/origin/master"
+    },
+    {
+      "name": "git.git_checkout",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Switched to branch 'feature/test'."
+    },
+    {
+      "name": "git.git_push",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Pushed successfully: To C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\git_remote.git\n * [new branch]      feature/test -> feature/test"
+    },
+    {
+      "name": "git.git_clone",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Repository cloned to: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\cloned_repo"
+    },
+    {
+      "name": "git.git_pull",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Pull result: Updating c0eecef..1068751\nFast-forward\n readme.txt | 1 +\n 1 file changed, 1 insertion(+)"
+    },
+    {
+      "name": "compression.zip_files",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Zipped 2 file(s) \u2192 C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\bundle.zip (0.3 KB)"
+    },
+    {
+      "name": "compression.list_zip_contents",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Archive: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\bundle.zip\nContents (2 items):\n  sample.txt  (28 B)\n  docs/doc.txt  (15 B)"
+    },
+    {
+      "name": "compression.unzip_file",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Extracted 2 item(s) \u2192 C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\unzipped"
+    },
+    {
+      "name": "network.ping_host",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Pinging 127.0.0.1 with 32 bytes of data:\nReply from 127.0.0.1: bytes=32 time<1ms TTL=128\n\nPing statistics for 127.0.0.1:\n    Packets: Sent = 1, Received = 1, Lost = 0 (0% loss),\nApproximate round trip times in milli-seconds:\n    Minimum = 0ms, Maximum = 0ms, Average = 0ms"
+    },
+    {
+      "name": "network.get_public_ip",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Public IP: 61.0.228.101"
+    },
+    {
+      "name": "network.get_local_network_info",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Hostname  : DESKTOP-6UPV305\nLocal IP  : 172.180.9.215\nOS        : Windows\n\nNetwork Interfaces (IPv4):\nIPAddress       InterfaceAlias               \n---------       --------------               \n192.168.56.1    Ethernet 2                   \n192.168.220.1   VMware Network Adapter VMnet8\n169.254.177.130 Local Area Connection* 4     \n169.254.110.193 Local Area Connection* 3     \n192.168.128.1   VMware Network Adapter VMnet1\n172.180.9.215   Wi-Fi                        \n169.254.212.194 McAfee VPN    ... [truncated]"
+    },
+    {
+      "name": "network.check_port",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Port 59572 on 127.0.0.1 is OPEN."
+    },
+    {
+      "name": "network.dns_lookup",
+      "status": "pass",
+      "mode": "live",
+      "detail": "DNS Lookup for 'example.com':\n  172.66.147.243\n  104.20.23.154"
+    },
+    {
+      "name": "network.traceroute",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Traceroute to 'example.com' timed out."
+    },
+    {
+      "name": "media.get_volume",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Volume info: Use set_volume to control audio. (Direct volume query requires AudioDeviceCmdlets module)"
+    },
+    {
+      "name": "media.set_volume",
+      "status": "pass",
+      "mode": "mocked",
+      "detail": "System volume set to 25%."
+    },
+    {
+      "name": "media.mute_audio",
+      "status": "pass",
+      "mode": "mocked",
+      "detail": "Audio muted."
+    },
+    {
+      "name": "media.unmute_audio",
+      "status": "pass",
+      "mode": "mocked",
+      "detail": "Audio unmuted."
+    },
+    {
+      "name": "media.play_audio_file",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Playing: silent.wav"
+    },
+    {
+      "name": "image.generate_image",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Image generated and saved: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\generated_test.png (9.4 KB)\nPrompt: 'a simple red square icon'"
+    },
+    {
+      "name": "image.get_image_info",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Image Info: sample.png\nDimensions : 120 x 120 px\nFormat     : PNG\nMode       : RGB (e.g. RGB, RGBA, L=grayscale)\nFile Size  : 0.6 KB"
+    },
+    {
+      "name": "image.resize_image",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Resized 120x120 \u2192 64x64\nSaved: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\sample_resized.png"
+    },
+    {
+      "name": "image.convert_image_format",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Converted sample.png \u2192 sample.jpg (JPEG, 2.1 KB)"
+    },
+    {
+      "name": "image.search_images",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Error searching images: "
+    },
+    {
+      "name": "calendar.create_calendar_event",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Calendar event created: 'Workflow Meeting'\nStarts : Friday, May 01 2026 at 10:00 AM\nEnds   : Friday, May 01 2026 at 11:00 AM\nFile   : C:\\Users\\soman\\OneDrive\\Desktop\\friday\\workspace\\workflow_suite_20260417_165535\\workspace\\event_Workflow_Meeting_20260501_1000.ics\nImport this .ics file into Google Calendar, Outlook, or Apple Calendar."
+    },
+    {
+      "name": "calendar.add_reminder",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Reminder set: 'Check workflow results'\nDue: Friday, May 01 2026 at 09:00 AM\nID: 95ac3f60"
+    },
+    {
+      "name": "calendar.list_reminders",
+      "status": "pass",
+      "mode": "live",
+      "detail": "=== REMINDERS (1 total) ===\n\n[TODO] [95ac3f60] Check workflow results\n        Due: Fri May 01 2026 09:00 AM"
+    },
+    {
+      "name": "calendar.mark_reminder_done",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Reminder 'Check workflow results' marked as done."
+    },
+    {
+      "name": "calendar.delete_reminder",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Reminder 95ac3f60 deleted."
+    },
+    {
+      "name": "firecrawl.deep_scrape_url",
+      "status": "pass",
+      "mode": "live",
+      "detail": "[Trafilatura Fallback Scrape]\n\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\n\nLearn more"
+    },
+    {
+      "name": "github.github_repo_summary",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Repo: octocat/Hello-World\nDescription: My first repository on GitHub!\nStars: 3550 | Forks: 6017\nOpen Issues: 3926\nPrimary Language: None"
+    },
+    {
+      "name": "github.github_list_issues",
+      "status": "pass",
+      "mode": "live",
+      "detail": "Open issues for octocat/Hello-World:\n#7551: MCP github connectivity test (automated by Hermes) (by Noa-TE20)\n#7550: \u6d4b\u8bd5\u4fee\u6539 (by luyicheng666-oss)\n#7549: Test Issue 1776399021 (by neo-noclick)\n#7548: \ud83d\udea8 New article published \ud83d\ude2b (by rididbxeuebb)\n#7547: test (by mattiagggg)\n#7546: Fix typo in README (by Abah-Isabella)\n#7545: Resolve issue #99999999 (by atecnoco-arch)\n#7544: Resolve issue #99999999 (by atecnoco-arch)\n#7543: Added collaboration file (by rahulvegdani)\n#7542: happiness (by meekztam9-ta)"
+    },
+    {
+      "name": "github.github_search_code",
+      "status": "skip",
+      "mode": "live",
+      "detail": "GitHub Code Search requires a GITHUB_TOKEN. Please add one to your .env."
+    }
+  ]
+}
