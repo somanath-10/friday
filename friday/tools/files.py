@@ -5,10 +5,17 @@ open in Finder, and manage the workspace directory.
 
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
-from friday.path_utils import resolve_user_path, safe_filename, workspace_dir, workspace_path
+from friday.path_utils import (
+    known_user_paths,
+    resolve_user_path,
+    safe_filename,
+    workspace_dir,
+    workspace_path,
+)
 
 
 def _workspace_dir() -> str:
@@ -131,6 +138,31 @@ def register(mcp):
             return f"Error creating document: {str(e)}"
 
     @mcp.tool()
+    def create_folder(folder_path: str) -> str:
+        """
+        Create a folder at any path. Relative paths default to the workspace, and
+        special roots like Desktop/Documents/Downloads are supported.
+        Examples: 'reports', 'Desktop/demo', 'Documents/Notes/Archive'.
+        """
+        try:
+            resolved_path = resolve_user_path(folder_path)
+            resolved_path.mkdir(parents=True, exist_ok=True)
+            return f"Folder ready: {resolved_path}"
+        except Exception as e:
+            return f"Error creating folder: {str(e)}"
+
+    @mcp.tool()
+    def get_special_paths() -> str:
+        """
+        Return the important user folders that FRIDAY can target directly.
+        Use this before desktop/documents/downloads tasks when the exact path matters.
+        """
+        try:
+            return "\n".join(f"{name}: {path}" for name, path in known_user_paths().items())
+        except Exception as e:
+            return f"Error getting special paths: {str(e)}"
+
+    @mcp.tool()
     def list_workspace_files() -> str:
         """
         List all files in the workspace folder — everything F.R.I.D.A.Y. has created or downloaded.
@@ -160,9 +192,9 @@ def register(mcp):
     @mcp.tool()
     def open_in_finder(path: str = "") -> str:
         """
-        Open a file or folder in macOS Finder.
+        Open a file or folder in the system file manager.
         If path is empty, opens the workspace folder.
-        Use this when the user says 'show me in Finder', 'open the folder', 'open my workspace'.
+        Use this when the user says 'show me the folder', 'open Desktop', 'open my workspace'.
         """
         try:
             if not path:
@@ -173,12 +205,18 @@ def register(mcp):
             if not os.path.exists(path):
                 return f"Path does not exist: {path}"
 
-            result = subprocess.run(["open", path], capture_output=True, text=True, timeout=5)
+            if os.name == "nt":
+                result = subprocess.run(["explorer", path], capture_output=True, text=True, timeout=10)
+            elif sys.platform == "darwin":
+                result = subprocess.run(["open", path], capture_output=True, text=True, timeout=10)
+            else:
+                result = subprocess.run(["xdg-open", path], capture_output=True, text=True, timeout=10)
+
             if result.returncode == 0:
-                return f"Opened in Finder: {path}"
-            return f"Could not open in Finder: {result.stderr.strip()}"
+                return f"Opened folder view: {path}"
+            return f"Could not open path: {result.stderr.strip()}"
         except Exception as e:
-            return f"Error opening Finder: {str(e)}"
+            return f"Error opening path: {str(e)}"
 
     @mcp.tool()
     def append_to_file(file_path: str, content: str) -> str:

@@ -9,6 +9,7 @@ import os
 import threading
 import time
 import platform
+from pathlib import Path
 
 from friday.path_utils import safe_filename, workspace_dir, workspace_path
 
@@ -23,6 +24,192 @@ def _escape_applescript_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _powershell(script: str, timeout: int = 10) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _windows_search_results(query: str, limit: int = 20) -> list[str]:
+    escaped_query = _ps_quote(query)
+    ps_script = f"""
+$query = {escaped_query}
+$pattern = "*$query*"
+$limit = {int(limit)}
+$results = New-Object System.Collections.Generic.List[string]
+function Add-Result([string]$value) {{
+  if (-not [string]::IsNullOrWhiteSpace($value) -and -not $results.Contains($value)) {{
+    $results.Add($value)
+  }}
+}}
+
+$cmd = Get-Command -Name $query -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($cmd) {{ Add-Result $cmd.Source }}
+
+$startMenuDirs = @(
+  "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
+  "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs"
+)
+foreach ($dir in $startMenuDirs) {{
+  if (Test-Path $dir) {{
+    Get-ChildItem -Path $dir -Recurse -Include *.lnk,*.appref-ms -ErrorAction SilentlyContinue |
+      Where-Object {{ $_.BaseName -like $pattern }} |
+      Select-Object -First $limit |
+      ForEach-Object {{ Add-Result $_.FullName }}
+  }}
+}}
+
+$searchRoots = @(
+  "$env:LOCALAPPDATA\\Programs",
+  "$env:ProgramFiles",
+  "${{env:ProgramFiles(x86)}}",
+  "$env:LOCALAPPDATA\\Microsoft\\WindowsApps"
+)
+foreach ($dir in $searchRoots) {{
+  if (Test-Path $dir) {{
+    Get-ChildItem -Path $dir -Recurse -Depth 3 -Filter "*$query*.exe" -File -ErrorAction SilentlyContinue |
+      Select-Object -First $limit |
+      ForEach-Object {{ Add-Result $_.FullName }}
+  }}
+}}
+
+$uninstallKeys = @(
+  "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+  "HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"
+)
+foreach ($key in $uninstallKeys) {{
+  Get-ItemProperty -Path $key -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.DisplayName -like $pattern }} |
+    Select-Object -First $limit |
+    ForEach-Object {{
+      if ($_.DisplayIcon) {{ Add-Result $_.DisplayIcon }}
+      if ($_.InstallLocation) {{ Add-Result ("{{0}} :: {{1}}" -f $_.DisplayName, $_.InstallLocation) }}
+      else {{ Add-Result $_.DisplayName }}
+    }}
+}}
+
+$results | Select-Object -First $limit
+"""
+    result = _powershell(ps_script, timeout=20)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "PowerShell app search failed")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _windows_launch_application(app_name: str) -> str:
+    escaped_name = _ps_quote(app_name)
+    ps_script = f"""
+$app = {escaped_name}
+function Try-Launch([string]$target) {{
+  if ([string]::IsNullOrWhiteSpace($target)) {{ return $false }}
+  try {{
+    Start-Process -FilePath $target -ErrorAction Stop | Out-Null
+    Write-Output $target
+    return $true
+  }} catch {{
+    return $false
+  }}
+}}
+
+if (Try-Launch $app) {{ exit 0 }}
+
+$cmd = Get-Command -Name $app -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($cmd -and (Try-Launch $cmd.Source)) {{ exit 0 }}
+
+$pattern = "*$app*"
+$startMenuDirs = @(
+  "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
+  "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs"
+)
+foreach ($dir in $startMenuDirs) {{
+  if (Test-Path $dir) {{
+    $match = Get-ChildItem -Path $dir -Recurse -Include *.lnk,*.appref-ms -ErrorAction SilentlyContinue |
+      Where-Object {{ $_.BaseName -like $pattern }} |
+      Select-Object -First 1
+    if ($match -and (Try-Launch $match.FullName)) {{ exit 0 }}
+  }}
+}}
+
+$searchRoots = @(
+  "$env:LOCALAPPDATA\\Programs",
+  "$env:ProgramFiles",
+  "${{env:ProgramFiles(x86)}}",
+  "$env:LOCALAPPDATA\\Microsoft\\WindowsApps"
+)
+foreach ($dir in $searchRoots) {{
+  if (Test-Path $dir) {{
+    $match = Get-ChildItem -Path $dir -Recurse -Depth 3 -Filter "*$app*.exe" -File -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($match -and (Try-Launch $match.FullName)) {{ exit 0 }}
+  }}
+}}
+
+Write-Error "Could not find or launch application: $app"
+exit 1
+"""
+    result = _powershell(ps_script, timeout=20)
+    if result.returncode == 0:
+        launched = result.stdout.strip().splitlines()
+        target = launched[-1] if launched else app_name
+        return f"Launched application: {target}"
+    raise RuntimeError(result.stderr.strip() or f"Could not launch {app_name}")
+
+
+def _windows_installed_apps(query: str = "", limit: int = 50) -> list[str]:
+    escaped_query = _ps_quote(query)
+    filter_clause = "$true" if not query.strip() else "$_ -like $pattern"
+    ps_script = f"""
+$query = {escaped_query}
+$pattern = "*$query*"
+$limit = {int(limit)}
+$results = New-Object System.Collections.Generic.List[string]
+function Add-Result([string]$value) {{
+  if (-not [string]::IsNullOrWhiteSpace($value) -and -not $results.Contains($value)) {{
+    $results.Add($value)
+  }}
+}}
+
+$startMenuDirs = @(
+  "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
+  "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs"
+)
+foreach ($dir in $startMenuDirs) {{
+  if (Test-Path $dir) {{
+    Get-ChildItem -Path $dir -Recurse -Include *.lnk,*.appref-ms -ErrorAction SilentlyContinue |
+      ForEach-Object {{ Add-Result $_.BaseName }}
+  }}
+}}
+
+$uninstallKeys = @(
+  "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+  "HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"
+)
+foreach ($key in $uninstallKeys) {{
+  Get-ItemProperty -Path $key -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.DisplayName }} |
+    ForEach-Object {{ Add-Result $_.DisplayName }}
+}}
+
+$results |
+  Sort-Object -Unique |
+  Where-Object {{ {filter_clause} }} |
+  Select-Object -First $limit
+"""
+    result = _powershell(ps_script, timeout=20)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "PowerShell installed app query failed")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def register(mcp):
 
     @mcp.tool()
@@ -30,47 +217,25 @@ def register(mcp):
         """
         Open any application by name or system command.
         Examples: 'Safari', 'Spotify', 'code', 'python3', 'Notepad', 'Files'.
-        If the native OS launcher fails, it will attempt to launch the command directly.
+        On Windows, this searches Start Menu shortcuts, AppData programs, and Program Files.
         Use this whenever the user asks to 'open', 'launch', or 'start' an app/software.
         """
         try:
-            success = False
-            error_msg = ""
-            
-            # 1. Try Native OS Visual Launchers
             if OS == "Darwin":
                 result = subprocess.run(["open", "-a", app_name], capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
-                    success = True
-                else:
-                    result = subprocess.run(["open", app_name], capture_output=True, text=True, timeout=10)
-                    if result.returncode == 0:
-                        success = True
-                    else:
-                        error_msg = result.stderr.strip()
-            elif OS == "Windows":
-                result = subprocess.run(["start", "", app_name], shell=True, capture_output=True, text=True, timeout=10)
+                    return f"Launched application: {app_name}"
+                result = subprocess.run(["open", app_name], capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
-                    success = True
-                else:
-                    error_msg = result.stderr.strip()
-            else:  # Linux
+                    return f"Launched application: {app_name}"
+                return f"Could not launch '{app_name}': {result.stderr.strip()}"
+            elif OS == "Windows":
+                return _windows_launch_application(app_name)
+            else:
                 result = subprocess.run(["xdg-open", app_name], capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
-                    success = True
-                else:
-                     error_msg = result.stderr.strip()
-
-            # 2. Universal Generic Shell Fallback for CLI tools and Custom Scripts
-            if not success:
-                # Fire and forget via shell (redirect output so it doesn't block)
-                if OS == "Windows":
-                    subprocess.Popen(app_name, shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE)
-                else:
-                    subprocess.Popen(app_name, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return f"Native launcher failed ({error_msg}). Falling back to direct shell execution. Attempted to launch: '{app_name}'."
-
-            return f"Launched {app_name} successfully using native OS launcher."
+                    return f"Launched application: {app_name}"
+                return f"Could not launch '{app_name}': {result.stderr.strip()}"
         except Exception as e:
             return f"Error launching application: {str(e)}"
 
@@ -113,9 +278,10 @@ def register(mcp):
             elif OS == "Windows":
                 ps_script = (
                     f"$wshell = New-Object -ComObject WScript.Shell; "
-                    f"$wshell.AppActivate('{app_name}')"
+                    f"$focused = $wshell.AppActivate({_ps_quote(app_name)}); "
+                    f"if ($focused) {{ Write-Output 'focused' }} else {{ exit 1 }}"
                 )
-                result = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True, timeout=10)
+                result = _powershell(ps_script, timeout=10)
             else:  # Linux
                 result = subprocess.run(["wmctrl", "-a", app_name], capture_output=True, text=True, timeout=10)
                 if result.returncode != 0:
@@ -354,6 +520,50 @@ def register(mcp):
             return f"Error listing apps: {str(e)}"
 
     @mcp.tool()
+    def list_installed_apps(query: str = "", limit: int = 50) -> str:
+        """
+        List installed applications on the local system.
+        Use this when the user asks what software is installed, not just what is running.
+        """
+        try:
+            if limit <= 0:
+                return "Limit must be greater than zero."
+
+            if OS == "Windows":
+                apps = _windows_installed_apps(query=query, limit=limit)
+            elif OS == "Darwin":
+                result = subprocess.run(
+                    ["find", "/Applications", "/System/Applications", "-maxdepth", "2", "-name", "*.app"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                apps = [Path(line).stem for line in result.stdout.splitlines() if line.strip()]
+                if query.strip():
+                    needle = query.lower()
+                    apps = [app for app in apps if needle in app.lower()]
+                apps = sorted(dict.fromkeys(apps))[:limit]
+            else:
+                result = subprocess.run(
+                    ["find", "/usr/share/applications", "-maxdepth", "2", "-name", "*.desktop"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                apps = [Path(line).stem for line in result.stdout.splitlines() if line.strip()]
+                if query.strip():
+                    needle = query.lower()
+                    apps = [app for app in apps if needle in app.lower()]
+                apps = sorted(dict.fromkeys(apps))[:limit]
+
+            if not apps:
+                qualifier = f" matching '{query}'" if query.strip() else ""
+                return f"No installed applications found{qualifier}."
+            return f"Installed applications ({len(apps)}):\n" + "\n".join(f"  • {app}" for app in apps)
+        except Exception as e:
+            return f"Error listing installed apps: {str(e)}"
+
+    @mcp.tool()
     def search_local_apps(query: str) -> str:
         """
         Search for installed software/applications on the local system.
@@ -376,12 +586,7 @@ def register(mcp):
                         )
                         results.extend(res.stdout.strip().splitlines())
             elif OS == "Windows":
-                ps_script = (
-                    f"Get-ChildItem -Path 'C:\\Program Files', 'C:\\Program Files (x86)' -Filter '*{query}*' -Recurse -Depth 1 -ErrorAction SilentlyContinue | "
-                    f"Select-Object -ExpandProperty FullName"
-                )
-                res = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True, timeout=15)
-                results.extend(res.stdout.strip().splitlines())
+                results.extend(_windows_search_results(query, limit=20))
             else:  # Linux
                 res = subprocess.run(
                     ["find", "/usr/share/applications", "/usr/bin", "-iname", f"*{query}*"],
@@ -410,8 +615,12 @@ def register(mcp):
                 # Parse "x=..., y=..." (Note: Mac Y is from bottom, convert to top-down in next steps if needed)
                 return f"Current mouse position (OS Raw): {result.stdout.strip()}"
             elif OS == "Windows":
-                ps_script = "[System.Windows.Forms.Cursor]::Position"
-                result = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True, timeout=5)
+                ps_script = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "$pos = [System.Windows.Forms.Cursor]::Position; "
+                    'Write-Output ("X={0}, Y={1}" -f $pos.X, $pos.Y)'
+                )
+                result = _powershell(ps_script, timeout=5)
                 return f"Current mouse position: {result.stdout.strip()}"
             return "Mouse coordinates not supported on this OS without extra libs."
         except Exception as e:
@@ -430,12 +639,30 @@ def register(mcp):
                 script = f'tell application "System Events" to click at {{{x}, {y}}}'
                 subprocess.run(["osascript", "-e", script], timeout=5)
             elif OS == "Windows":
-                ps_script = (
-                    f"Add-Type -AssemblyName System.Windows.Forms; "
-                    f"[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point({x}, {y}); "
-                    f"$sim = New-Object -ComObject WScript.Shell; $sim.SendKeys('{{LEFTCLICK}}')" 
-                ) # Simplified for demonstration
-                subprocess.run(["powershell", "-Command", ps_script], timeout=5)
+                flags = {
+                    "left": ("0x0002", "0x0004"),
+                    "right": ("0x0008", "0x0010"),
+                    "middle": ("0x0020", "0x0040"),
+                }
+                if button.lower() not in flags:
+                    return f"Unsupported mouse button: {button}"
+                down_flag, up_flag = flags[button.lower()]
+                ps_script = f"""
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class MouseTools {{
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+}}
+"@;
+[MouseTools]::SetCursorPos({x}, {y}) | Out-Null;
+Start-Sleep -Milliseconds 60;
+[MouseTools]::mouse_event({down_flag}, 0, 0, 0, [UIntPtr]::Zero);
+Start-Sleep -Milliseconds 60;
+[MouseTools]::mouse_event({up_flag}, 0, 0, 0, [UIntPtr]::Zero);
+"""
+                _powershell(ps_script, timeout=5)
             
             return f"Synthesized {button} click at ({x}, {y})."
         except Exception as e:

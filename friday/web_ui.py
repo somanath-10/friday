@@ -1,10 +1,16 @@
 """
-Simple web UI routes for launching and monitoring the FRIDAY connection flow.
+Local web UI routes for FRIDAY.
+
+The default experience is now a fully local browser page that talks to the
+existing MCP tool server through a backend chat bridge. LiveKit is no longer
+required for the primary flow.
 """
 
 from __future__ import annotations
 
 import html
+import json
+import logging
 import os
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -12,8 +18,10 @@ from urllib.parse import urlsplit, urlunsplit
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from friday.local_chat import local_greeting, local_mode_issues, local_mode_ready, run_local_chat
 
-PLAYGROUND_URL = "https://agents-playground.livekit.io"
+
+logger = logging.getLogger("friday.web_ui")
 
 
 def _canonical_browser_host(host: str | None) -> str:
@@ -30,15 +38,10 @@ def _canonicalize_url(url: str) -> str:
 
     parts = urlsplit(url)
     host = _canonical_browser_host(parts.hostname)
-
     if not parts.scheme or not parts.netloc:
         return url
 
-    if parts.port:
-        netloc = f"{host}:{parts.port}"
-    else:
-        netloc = host
-
+    netloc = f"{host}:{parts.port}" if parts.port else host
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
@@ -46,116 +49,92 @@ def _browser_base_url(request: Request) -> str:
     scheme = request.url.scheme
     host = _canonical_browser_host(request.url.hostname)
     port = request.url.port
-
     default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
     if port and not default_port:
         return f"{scheme}://{host}:{port}"
     return f"{scheme}://{host}"
 
 
-def _required_env_vars() -> list[str]:
-    required = [
-        "LIVEKIT_URL",
-        "LIVEKIT_API_KEY",
-        "LIVEKIT_API_SECRET",
-    ]
-
-    stt_provider = os.getenv("STT_PROVIDER", "deepgram").strip().lower()
-    llm_provider = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
-    tts_provider = os.getenv("TTS_PROVIDER", "sarvam").strip().lower()
-
-    if stt_provider == "deepgram":
-        required.append("DEEPGRAM_API_KEY")
-    elif stt_provider == "sarvam":
-        required.append("SARVAM_API_KEY")
-    elif stt_provider == "whisper":
-        required.append("OPENAI_API_KEY")
-
-    if llm_provider == "gemini":
-        required.append("GOOGLE_API_KEY")
-    elif llm_provider == "openai":
-        required.append("OPENAI_API_KEY")
-
-    if tts_provider == "sarvam":
-        required.append("SARVAM_API_KEY")
-    elif tts_provider == "openai":
-        required.append("OPENAI_API_KEY")
-
-    return sorted(set(required))
-
-
-def _connection_state(request: Request | None = None) -> dict[str, Any]:
-    server_name = os.getenv("SERVER_NAME", "Friday").strip() or "Friday"
-    livekit_url = os.getenv("LIVEKIT_URL", "").strip()
+def _mcp_server_url(request: Request | None = None) -> str:
     sse_path = os.getenv("MCP_SSE_PATH", "/sse").strip() or "/sse"
-    mcp_server_url = _canonicalize_url(os.getenv("MCP_SERVER_URL", "").strip())
+    configured = _canonicalize_url(os.getenv("MCP_SERVER_URL", "").strip())
+    if configured:
+        return configured
 
-    if not mcp_server_url and request is not None:
-        base_url = _browser_base_url(request)
-        mcp_server_url = f"{base_url}{sse_path}"
-    elif not mcp_server_url:
-        port = os.getenv("MCP_SERVER_PORT", "8000").strip() or "8000"
-        mcp_server_url = f"http://127.0.0.1:{port}{sse_path}"
+    if request is not None:
+        return f"{_browser_base_url(request)}{sse_path}"
 
-    missing = [name for name in _required_env_vars() if not os.getenv(name)]
-    stt_provider = os.getenv("STT_PROVIDER", "deepgram").strip().lower()
-    llm_provider = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
-    tts_provider = os.getenv("TTS_PROVIDER", "sarvam").strip().lower()
+    port = os.getenv("MCP_SERVER_PORT", "8000").strip() or "8000"
+    return f"http://127.0.0.1:{port}{sse_path}"
+
+
+def _local_status(request: Request | None = None) -> dict[str, Any]:
+    llm_provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+    llm_model = (
+        os.getenv("OPENAI_LLM_MODEL", "gpt-4o").strip()
+        if llm_provider == "openai"
+        else os.getenv("GEMINI_LLM_MODEL", "gemini-2.5-flash").strip()
+    )
+    issues = local_mode_issues()
 
     return {
-        "server_name": server_name,
-        "playground_url": PLAYGROUND_URL,
-        "mcp_server_url": mcp_server_url,
-        "livekit_url": livekit_url,
-        "stt_provider": stt_provider,
+        "server_name": os.getenv("SERVER_NAME", "Friday").strip() or "Friday",
+        "mode": "local-browser",
+        "mcp_server_url": _mcp_server_url(request),
         "llm_provider": llm_provider,
-        "tts_provider": tts_provider,
-        "missing_env": missing,
-        "ready": not missing,
+        "llm_model": llm_model,
+        "browser_voice_input": "SpeechRecognition / webkitSpeechRecognition when available",
+        "browser_voice_output": "speechSynthesis",
+        "issues": issues,
+        "ready": not issues,
+        "greeting": local_greeting(),
+        "legacy_livekit_configured": bool(
+            os.getenv("LIVEKIT_URL") and os.getenv("LIVEKIT_API_KEY") and os.getenv("LIVEKIT_API_SECRET")
+        ),
     }
 
 
 def _render_page(request: Request) -> str:
-    state = _connection_state(request)
-
+    state = _local_status(request)
     server_name = html.escape(state["server_name"])
     mcp_server_url = html.escape(state["mcp_server_url"])
-    livekit_url = html.escape(state["livekit_url"] or "Not configured yet")
-    provider_stack = html.escape(
-        f"{state['stt_provider']} -> {state['llm_provider']} -> {state['tts_provider']}"
-    )
-    readiness_label = "Ready To Connect" if state["ready"] else "Needs Configuration"
-    readiness_tone = "ready" if state["ready"] else "warn"
-    missing_items = "".join(
-        f"<li>{html.escape(item)}</li>" for item in state["missing_env"]
-    ) or "<li>No missing environment variables detected.</li>"
+    llm_label = html.escape(f"{state['llm_provider']} / {state['llm_model']}")
+    greeting = html.escape(state["greeting"])
+    readiness = "Ready" if state["ready"] else "Needs Config"
+    readiness_class = "ready" if state["ready"] else "warn"
+    issues = state["issues"] or ["Local browser mode is ready."]
+    issue_items = "".join(f"<li>{html.escape(item)}</li>" for item in issues)
 
     return f"""<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{server_name} Connection Deck</title>
+    <title>{server_name} Local Console</title>
     <style>
       :root {{
-        --bg: #07111a;
-        --bg-soft: #102231;
-        --panel: rgba(10, 21, 32, 0.84);
-        --panel-strong: rgba(12, 27, 41, 0.96);
-        --edge: rgba(115, 144, 171, 0.22);
-        --text: #eef6ff;
-        --muted: #92a6bd;
-        --accent: #ff7a45;
-        --accent-2: #29d3c1;
-        --success: #52d68b;
-        --warning: #ffc857;
-        --danger: #ff6f7d;
-        --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+        --bg: #071018;
+        --bg-panel: rgba(9, 20, 31, 0.9);
+        --bg-strong: rgba(12, 25, 38, 0.98);
+        --line: rgba(151, 186, 214, 0.16);
+        --text: #edf6ff;
+        --muted: #96abc1;
+        --accent: #ff7b47;
+        --accent-soft: rgba(255, 123, 71, 0.16);
+        --cool: #2ad1be;
+        --cool-soft: rgba(42, 209, 190, 0.18);
+        --ok: #54d488;
+        --warn: #ffc857;
+        --shadow: 0 28px 90px rgba(0, 0, 0, 0.35);
         --radius: 24px;
       }}
 
       * {{
         box-sizing: border-box;
+      }}
+
+      html {{
+        scroll-behavior: smooth;
       }}
 
       body {{
@@ -164,10 +143,9 @@ def _render_page(request: Request) -> str:
         font-family: "Segoe UI Variable Display", "Aptos", "Trebuchet MS", sans-serif;
         color: var(--text);
         background:
-          radial-gradient(circle at top left, rgba(255, 122, 69, 0.18), transparent 28%),
-          radial-gradient(circle at top right, rgba(41, 211, 193, 0.16), transparent 24%),
-          linear-gradient(135deg, #08111a 0%, #0a1823 40%, #111a26 100%);
-        overflow-x: hidden;
+          radial-gradient(circle at 15% 10%, rgba(255, 123, 71, 0.22), transparent 26%),
+          radial-gradient(circle at 85% 0%, rgba(42, 209, 190, 0.18), transparent 24%),
+          linear-gradient(135deg, #050d14 0%, #09141d 45%, #0e1620 100%);
       }}
 
       body::before {{
@@ -178,36 +156,36 @@ def _render_page(request: Request) -> str:
           linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
           linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
         background-size: 28px 28px;
-        mask-image: linear-gradient(to bottom, rgba(0,0,0,0.4), transparent 85%);
+        mask-image: linear-gradient(to bottom, rgba(0,0,0,0.45), transparent 90%);
         pointer-events: none;
       }}
 
       .shell {{
-        width: min(1120px, calc(100% - 32px));
-        margin: 32px auto;
+        width: min(1180px, calc(100% - 28px));
+        margin: 24px auto 36px;
         display: grid;
         gap: 20px;
       }}
 
       .hero {{
         position: relative;
-        padding: 32px;
-        border: 1px solid var(--edge);
-        border-radius: calc(var(--radius) + 8px);
-        background: linear-gradient(145deg, rgba(13, 28, 43, 0.9), rgba(8, 18, 29, 0.9));
-        box-shadow: var(--shadow);
         overflow: hidden;
+        padding: 28px;
+        border: 1px solid var(--line);
+        border-radius: 30px;
+        background: linear-gradient(145deg, rgba(12, 28, 42, 0.96), rgba(8, 18, 28, 0.94));
+        box-shadow: var(--shadow);
       }}
 
       .hero::after {{
         content: "";
         position: absolute;
-        width: 220px;
-        height: 220px;
+        width: 260px;
+        height: 260px;
+        top: -90px;
+        right: -60px;
         border-radius: 50%;
-        background: radial-gradient(circle, rgba(255, 122, 69, 0.28), transparent 68%);
-        top: -70px;
-        right: -30px;
+        background: radial-gradient(circle, rgba(42, 209, 190, 0.22), transparent 68%);
       }}
 
       .eyebrow {{
@@ -216,7 +194,7 @@ def _render_page(request: Request) -> str:
         gap: 10px;
         padding: 8px 12px;
         border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,0.1);
         background: rgba(255,255,255,0.04);
         color: var(--muted);
         font-size: 12px;
@@ -228,35 +206,35 @@ def _render_page(request: Request) -> str:
         width: 10px;
         height: 10px;
         border-radius: 50%;
-        background: var(--accent-2);
-        box-shadow: 0 0 0 0 rgba(41, 211, 193, 0.5);
-        animation: pulse 1.8s infinite;
+        background: var(--cool);
+        box-shadow: 0 0 0 0 rgba(42, 209, 190, 0.45);
+        animation: pulse 1.9s infinite;
       }}
 
       @keyframes pulse {{
-        0% {{ box-shadow: 0 0 0 0 rgba(41, 211, 193, 0.55); }}
-        70% {{ box-shadow: 0 0 0 14px rgba(41, 211, 193, 0); }}
-        100% {{ box-shadow: 0 0 0 0 rgba(41, 211, 193, 0); }}
+        0% {{ box-shadow: 0 0 0 0 rgba(42, 209, 190, 0.55); }}
+        70% {{ box-shadow: 0 0 0 16px rgba(42, 209, 190, 0); }}
+        100% {{ box-shadow: 0 0 0 0 rgba(42, 209, 190, 0); }}
       }}
 
       h1 {{
         margin: 18px 0 10px;
         max-width: 12ch;
-        font-size: clamp(2.6rem, 7vw, 5rem);
-        line-height: 0.95;
-        letter-spacing: -0.05em;
+        font-size: clamp(2.8rem, 7vw, 5.3rem);
+        line-height: 0.94;
+        letter-spacing: -0.055em;
       }}
 
       .hero p {{
         margin: 0;
-        max-width: 60ch;
+        max-width: 62ch;
         color: var(--muted);
+        line-height: 1.72;
         font-size: 1.02rem;
-        line-height: 1.7;
       }}
 
       .hero-actions {{
-        margin-top: 26px;
+        margin-top: 24px;
         display: flex;
         flex-wrap: wrap;
         gap: 12px;
@@ -269,9 +247,10 @@ def _render_page(request: Request) -> str:
         padding: 13px 18px;
         font: inherit;
         font-weight: 700;
+        color: var(--text);
         cursor: pointer;
         text-decoration: none;
-        transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+        transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
       }}
 
       .button:hover {{
@@ -279,14 +258,22 @@ def _render_page(request: Request) -> str:
       }}
 
       .button-primary {{
-        color: #08111a;
+        color: #081018;
         background: linear-gradient(135deg, var(--accent), #ffb347);
       }}
 
       .button-secondary {{
-        color: var(--text);
         background: rgba(255,255,255,0.04);
         border-color: rgba(255,255,255,0.1);
+      }}
+
+      .button-mic {{
+        min-width: 132px;
+      }}
+
+      .button-mic.listening {{
+        background: linear-gradient(135deg, #ff7b47, #ff4d6d);
+        color: #081018;
       }}
 
       .grid {{
@@ -297,25 +284,22 @@ def _render_page(request: Request) -> str:
 
       .card {{
         grid-column: span 12;
-        padding: 24px;
+        border: 1px solid var(--line);
         border-radius: var(--radius);
-        border: 1px solid var(--edge);
-        background: var(--panel);
-        backdrop-filter: blur(12px);
+        background: var(--bg-panel);
         box-shadow: var(--shadow);
+        backdrop-filter: blur(12px);
       }}
 
-      .card h2 {{
-        margin: 0 0 14px;
-        font-size: 1.08rem;
-        letter-spacing: 0.02em;
+      .card-inner {{
+        padding: 22px;
       }}
 
       .status-card {{
         grid-column: span 4;
       }}
 
-      .stack-card {{
+      .detail-card {{
         grid-column: span 8;
       }}
 
@@ -330,160 +314,231 @@ def _render_page(request: Request) -> str:
       }}
 
       .status-pill.ready {{
-        color: #08111a;
-        background: var(--success);
+        color: #081018;
+        background: var(--ok);
       }}
 
       .status-pill.warn {{
-        color: #221b08;
-        background: var(--warning);
+        color: #251d08;
+        background: var(--warn);
       }}
 
-      .metric {{
-        display: grid;
-        gap: 6px;
-      }}
-
-      .metric-label {{
+      .status-note {{
+        margin-top: 12px;
         color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        font-size: 0.72rem;
+        line-height: 1.62;
       }}
 
-      .metric-value {{
-        font-size: 1.15rem;
-        font-weight: 700;
+      .issue-list {{
+        margin: 14px 0 0;
+        padding-left: 18px;
+        color: var(--muted);
+        line-height: 1.55;
       }}
 
-      .stack-grid {{
+      .metric-grid {{
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 14px;
       }}
 
-      .stack-box {{
+      .metric-box {{
         padding: 16px;
         border-radius: 18px;
         background: rgba(255,255,255,0.03);
         border: 1px solid rgba(255,255,255,0.06);
       }}
 
-      .step-grid {{
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 16px;
-      }}
-
-      .step {{
-        position: relative;
-        padding: 18px 18px 20px;
-        border-radius: 20px;
-        background: var(--panel-strong);
-        border: 1px solid rgba(255,255,255,0.07);
-        min-height: 220px;
-      }}
-
-      .step-number {{
-        display: inline-flex;
-        width: 36px;
-        height: 36px;
-        align-items: center;
-        justify-content: center;
-        border-radius: 12px;
-        background: linear-gradient(135deg, rgba(255,122,69,0.18), rgba(41,211,193,0.18));
-        color: var(--text);
-        font-weight: 800;
-      }}
-
-      .step h3 {{
-        margin: 16px 0 8px;
-        font-size: 1.05rem;
-      }}
-
-      .step p {{
-        margin: 0 0 16px;
+      .metric-label {{
+        display: block;
         color: var(--muted);
-        line-height: 1.6;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 0.72rem;
+        margin-bottom: 6px;
       }}
 
-      .terminal {{
-        margin: 0 0 16px;
+      .metric-value {{
+        font-size: 1.04rem;
+        font-weight: 700;
+        word-break: break-word;
+      }}
+
+      .command-block {{
+        margin-top: 16px;
         padding: 14px;
         border-radius: 16px;
-        background: #08111a;
-        border: 1px solid rgba(255,255,255,0.08);
+        background: #081018;
+        border: 1px solid rgba(255,255,255,0.07);
         font-family: "Cascadia Mono", "Consolas", monospace;
-        font-size: 0.95rem;
         color: #d8ecff;
         overflow-x: auto;
       }}
 
-      .meta-list {{
-        list-style: none;
-        margin: 16px 0 0;
-        padding: 0;
+      .console {{
         display: grid;
-        gap: 12px;
+        grid-template-columns: minmax(0, 1fr) 280px;
+        gap: 20px;
       }}
 
-      .meta-list li {{
+      .chat-shell {{
+        display: grid;
+        gap: 16px;
+      }}
+
+      .message-log {{
+        min-height: 480px;
+        max-height: 68vh;
+        overflow-y: auto;
+        padding: 18px;
+        border-radius: 22px;
+        background: linear-gradient(180deg, rgba(8, 18, 28, 0.94), rgba(6, 14, 21, 0.98));
+        border: 1px solid rgba(255,255,255,0.06);
+        display: grid;
+        gap: 14px;
+      }}
+
+      .message {{
+        max-width: min(82%, 700px);
         padding: 14px 16px;
-        border-radius: 16px;
+        border-radius: 18px;
+        line-height: 1.64;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }}
+
+      .message.user {{
+        margin-left: auto;
+        background: linear-gradient(135deg, rgba(255,123,71,0.16), rgba(255,179,71,0.12));
+        border: 1px solid rgba(255,123,71,0.2);
+      }}
+
+      .message.assistant {{
+        background: linear-gradient(135deg, rgba(42,209,190,0.16), rgba(42,209,190,0.08));
+        border: 1px solid rgba(42,209,190,0.18);
+      }}
+
+      .message.system {{
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.06);
+      }}
+
+      .message-label {{
+        display: block;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+      }}
+
+      .tool-strip {{
+        margin-top: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }}
+
+      .tool-chip {{
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.08);
+        color: var(--muted);
+        font-size: 0.78rem;
+      }}
+
+      .composer {{
+        padding: 16px;
+        border-radius: 22px;
+        background: var(--bg-strong);
+        border: 1px solid rgba(255,255,255,0.07);
+      }}
+
+      .composer textarea {{
+        width: 100%;
+        min-height: 112px;
+        resize: vertical;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        line-height: 1.6;
+      }}
+
+      .composer-footer {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(255,255,255,0.07);
+      }}
+
+      .composer-actions {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }}
+
+      .side-panel {{
+        display: grid;
+        gap: 16px;
+      }}
+
+      .side-card {{
+        padding: 18px;
+        border-radius: 22px;
         background: rgba(255,255,255,0.03);
         border: 1px solid rgba(255,255,255,0.06);
       }}
 
-      .meta-label {{
-        display: block;
-        color: var(--muted);
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        margin-bottom: 6px;
+      .side-card h3 {{
+        margin: 0 0 10px;
+        font-size: 0.98rem;
       }}
 
-      .meta-value {{
-        display: block;
-        word-break: break-word;
-        font-family: "Cascadia Mono", "Consolas", monospace;
+      .side-card p,
+      .side-card li {{
+        color: var(--muted);
+        line-height: 1.62;
+      }}
+
+      .side-card ul {{
+        margin: 0;
+        padding-left: 18px;
+      }}
+
+      .mini {{
+        font-size: 0.9rem;
+      }}
+
+      .toggle {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+      }}
+
+      .footer-note {{
+        color: var(--muted);
         font-size: 0.92rem;
       }}
 
-      .missing-list {{
-        margin: 14px 0 0;
-        padding-left: 18px;
-        color: var(--muted);
-      }}
-
-      .status-note {{
-        margin-top: 12px;
-        color: var(--muted);
-        line-height: 1.6;
-      }}
-
-      .live-dot {{
-        display: inline-block;
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background: var(--success);
-        margin-right: 8px;
-      }}
-
-      @media (max-width: 900px) {{
+      @media (max-width: 980px) {{
         .status-card,
-        .stack-card {{
+        .detail-card {{
           grid-column: span 12;
         }}
 
-        .stack-grid,
-        .step-grid {{
+        .metric-grid,
+        .console {{
           grid-template-columns: 1fr;
-        }}
-
-        .hero {{
-          padding: 24px;
         }}
       }}
     </style>
@@ -491,133 +546,204 @@ def _render_page(request: Request) -> str:
   <body>
     <main class="shell">
       <section class="hero">
-        <div class="eyebrow"><span class="pulse"></span>Connection Deck</div>
+        <div class="eyebrow"><span class="pulse"></span>Local Browser Mode</div>
         <h1>{server_name}</h1>
         <p>
-          This page is the launch surface for your first session. Verify the stack,
-          start the voice worker, then open the LiveKit playground to begin the connection.
+          One terminal. One page. No LiveKit handoff. Type or use your browser microphone here,
+          and FRIDAY will reason on the backend while calling your MCP tools locally.
         </p>
         <div class="hero-actions">
-          <a class="button button-primary" href="/connect" target="_blank" rel="noreferrer">Start Connection</a>
+          <a class="button button-primary" href="#pilot-console">Open Console</a>
+          <button class="button button-secondary" type="button" data-copy="uv run friday">Copy Run Command</button>
           <button class="button button-secondary" type="button" data-copy="{mcp_server_url}">Copy MCP URL</button>
-          <button class="button button-secondary" type="button" data-copy="uv run friday_voice">Copy Voice Command</button>
         </div>
       </section>
 
       <section class="grid">
         <article class="card status-card">
-          <h2>Connection Status</h2>
-          <div class="status-pill {readiness_tone}" id="readiness-pill">{readiness_label}</div>
-          <p class="status-note">
-            <span class="live-dot"></span>MCP server is online. Voice connection readiness depends on your LiveKit
-            and provider keys.
-          </p>
-          <ul class="missing-list" id="missing-list">
-            {missing_items}
-          </ul>
+          <div class="card-inner">
+            <h2>System Status</h2>
+            <div class="status-pill {readiness_class}" id="readiness-pill">{readiness}</div>
+            <p class="status-note">
+              Local browser mode only needs the server and an OpenAI key. Speech input and spoken replies are handled by your browser when supported.
+            </p>
+            <ul class="issue-list" id="issue-list">{issue_items}</ul>
+          </div>
         </article>
 
-        <article class="card stack-card">
-          <h2>Stack Snapshot</h2>
-          <div class="stack-grid">
-            <div class="stack-box">
-              <div class="metric">
+        <article class="card detail-card">
+          <div class="card-inner">
+            <h2>Stack Snapshot</h2>
+            <div class="metric-grid">
+              <div class="metric-box">
+                <span class="metric-label">Run Once</span>
+                <span class="metric-value">uv run friday</span>
+              </div>
+              <div class="metric-box">
+                <span class="metric-label">LLM</span>
+                <span class="metric-value" id="llm-label">{llm_label}</span>
+              </div>
+              <div class="metric-box">
                 <span class="metric-label">MCP Endpoint</span>
                 <span class="metric-value" id="mcp-url">{mcp_server_url}</span>
               </div>
             </div>
-            <div class="stack-box">
-              <div class="metric">
-                <span class="metric-label">LiveKit Target</span>
-                <span class="metric-value" id="livekit-url">{livekit_url}</span>
-              </div>
-            </div>
-            <div class="stack-box">
-              <div class="metric">
-                <span class="metric-label">Provider Chain</span>
-                <span class="metric-value" id="provider-stack">{provider_stack}</span>
-              </div>
-            </div>
+            <div class="command-block">uv run friday</div>
           </div>
         </article>
       </section>
 
-      <section class="card">
-        <h2>Launch Sequence</h2>
-        <div class="step-grid">
-          <article class="step">
-            <span class="step-number">01</span>
-            <h3>Bring Up The Voice Worker</h3>
-            <p>The page is served by the MCP backend already. In a second terminal, start the LiveKit voice agent.</p>
-            <pre class="terminal">uv run friday_voice</pre>
-            <button class="button button-secondary" type="button" data-copy="uv run friday_voice">Copy Command</button>
-          </article>
+      <section class="card" id="pilot-console">
+        <div class="card-inner console">
+          <div class="chat-shell">
+            <div class="message-log" id="message-log"></div>
 
-          <article class="step">
-            <span class="step-number">02</span>
-            <h3>Open The Connection Surface</h3>
-            <p>Launch the LiveKit Agents Playground, join your room, and talk to FRIDAY once the worker is running.</p>
-            <a class="button button-primary" href="/connect" target="_blank" rel="noreferrer">Open Playground</a>
-          </article>
+            <div class="composer">
+              <textarea id="prompt-input" placeholder="Ask FRIDAY to open apps, create folders, search installed software, or run desktop tasks."></textarea>
+              <div class="composer-footer">
+                <div class="composer-actions">
+                  <button class="button button-primary" id="send-button" type="button">Send</button>
+                  <button class="button button-secondary button-mic" id="mic-button" type="button">Start Mic</button>
+                  <button class="button button-secondary" id="stop-speech" type="button">Stop Voice</button>
+                </div>
+                <label class="toggle">
+                  <input id="speak-toggle" type="checkbox" checked>
+                  Speak replies aloud
+                </label>
+              </div>
+            </div>
+          </div>
 
-          <article class="step">
-            <span class="step-number">03</span>
-            <h3>Confirm The Backend Link</h3>
-            <p>Your agent should fetch tools from this MCP endpoint while the session is live.</p>
-            <pre class="terminal" id="mcp-url-block">{mcp_server_url}</pre>
-            <button class="button button-secondary" type="button" data-copy="{mcp_server_url}">Copy Endpoint</button>
-          </article>
+          <aside class="side-panel">
+            <section class="side-card">
+              <h3>What Changed</h3>
+              <p class="mini">The local page is now the primary experience. You no longer need the LiveKit playground for normal use.</p>
+            </section>
+
+            <section class="side-card">
+              <h3>Voice Notes</h3>
+              <ul>
+                <li>Mic input uses the browser speech API when Edge or Chrome exposes it.</li>
+                <li>Spoken replies use the browser speech engine, so voices depend on your system.</li>
+                <li>If browser speech is unavailable, typing still works.</li>
+              </ul>
+            </section>
+
+            <section class="side-card">
+              <h3>Opening Websites</h3>
+              <p class="mini">Browser automation uses FRIDAY's own automation browser window. It does not take over your current Edge tab unless a desktop-control tool explicitly does that.</p>
+            </section>
+
+            <section class="side-card">
+              <h3>Greeting</h3>
+              <p class="mini">{greeting}</p>
+            </section>
+
+            <section class="side-card">
+              <h3>Advanced</h3>
+              <p class="mini footer-note">Legacy LiveKit mode can still exist in the codebase, but this page no longer depends on it.</p>
+            </section>
+          </aside>
         </div>
-      </section>
-
-      <section class="card">
-        <h2>Session Notes</h2>
-        <ul class="meta-list">
-          <li>
-            <span class="meta-label">What This Page Does</span>
-            <span class="meta-value">Verifies connection readiness, exposes the MCP endpoint, and launches the LiveKit playground.</span>
-          </li>
-          <li>
-            <span class="meta-label">What Still Runs Separately</span>
-            <span class="meta-value">The voice worker itself. Keep <code>uv run friday_voice</code> active while you connect.</span>
-          </li>
-          <li>
-            <span class="meta-label">Live Status Endpoint</span>
-            <span class="meta-value"><a href="/status" style="color: var(--accent-2);">/status</a></span>
-          </li>
-        </ul>
       </section>
     </main>
 
     <script>
+      const initialGreeting = {json.dumps(state["greeting"])};
+      const appState = {{
+        ready: {str(state["ready"]).lower()},
+        busy: false,
+        listening: false,
+        speakReplies: true,
+        messages: [
+          {{ role: "assistant", content: initialGreeting, toolEvents: [] }}
+        ],
+      }};
+
+      const messageLog = document.getElementById("message-log");
+      const promptInput = document.getElementById("prompt-input");
+      const sendButton = document.getElementById("send-button");
+      const micButton = document.getElementById("mic-button");
+      const stopSpeechButton = document.getElementById("stop-speech");
+      const speakToggle = document.getElementById("speak-toggle");
+      const issueList = document.getElementById("issue-list");
+      const readinessPill = document.getElementById("readiness-pill");
+
+      let recognition = null;
+
+      function escapeHtml(value) {{
+        return value
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }}
+
+      function renderMessages() {{
+        messageLog.innerHTML = appState.messages.map((message) => {{
+          const label = message.role === "user" ? "Boss" : (message.role === "assistant" ? "Friday" : "System");
+          const toolEvents = Array.isArray(message.toolEvents) && message.toolEvents.length
+            ? `<div class="tool-strip">${{message.toolEvents.map((tool) => `<span class="tool-chip">${{escapeHtml(tool.name)}}${{tool.ok ? "" : " error"}}</span>`).join("")}}</div>`
+            : "";
+          return `
+            <article class="message ${{message.role}}">
+              <span class="message-label">${{label}}</span>
+              <div>${{escapeHtml(message.content)}}</div>
+              ${{toolEvents}}
+            </article>
+          `;
+        }}).join("");
+        messageLog.scrollTop = messageLog.scrollHeight;
+      }}
+
+      function setBusy(isBusy) {{
+        appState.busy = isBusy;
+        sendButton.disabled = isBusy || !appState.ready;
+        micButton.disabled = isBusy || !appState.ready;
+      }}
+
+      function addMessage(role, content, toolEvents = []) {{
+        appState.messages.push({{ role, content, toolEvents }});
+        if (appState.messages.length > 18) {{
+          appState.messages = appState.messages.slice(-18);
+        }}
+        renderMessages();
+      }}
+
+      function speakReply(text) {{
+        if (!appState.speakReplies || !("speechSynthesis" in window)) {{
+          return;
+        }}
+
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1;
+        utterance.pitch = 1;
+        window.speechSynthesis.speak(utterance);
+      }}
+
       async function refreshStatus() {{
         try {{
-          const response = await fetch('/status', {{ headers: {{ 'Accept': 'application/json' }} }});
+          const response = await fetch("/status", {{ headers: {{ "Accept": "application/json" }} }});
           const status = await response.json();
-          const pill = document.getElementById('readiness-pill');
-          const missingList = document.getElementById('missing-list');
-          document.getElementById('mcp-url').textContent = status.mcp_server_url;
-          document.getElementById('livekit-url').textContent = status.livekit_url || 'Not configured yet';
-          document.getElementById('provider-stack').textContent = `${{status.stt_provider}} -> ${{status.llm_provider}} -> ${{status.tts_provider}}`;
-          document.getElementById('mcp-url-block').textContent = status.mcp_server_url;
 
-          pill.textContent = status.ready ? 'Ready To Connect' : 'Needs Configuration';
-          pill.className = `status-pill ${{status.ready ? 'ready' : 'warn'}}`;
+          appState.ready = Boolean(status.ready);
+          readinessPill.textContent = status.ready ? "Ready" : "Needs Config";
+          readinessPill.className = `status-pill ${{status.ready ? "ready" : "warn"}}`;
+          issueList.innerHTML = (status.issues.length ? status.issues : ["Local browser mode is ready."])
+            .map((item) => `<li>${{escapeHtml(item)}}</li>`)
+            .join("");
+          document.getElementById("mcp-url").textContent = status.mcp_server_url;
+          document.getElementById("llm-label").textContent = `${{status.llm_provider}} / ${{status.llm_model}}`;
 
-          if (status.missing_env.length) {{
-            missingList.innerHTML = status.missing_env.map((item) => `<li>${{item}}</li>`).join('');
-          }} else {{
-            missingList.innerHTML = '<li>No missing environment variables detected.</li>';
-          }}
-
-          document.querySelectorAll('[data-copy]').forEach((button) => {{
-            const value = button.dataset.copy;
-            if (value === '{mcp_server_url}') {{
+          document.querySelectorAll("[data-copy]").forEach((button) => {{
+            if (button.dataset.copy === {json.dumps(state["mcp_server_url"])}) {{
               button.dataset.copy = status.mcp_server_url;
             }}
           }});
+
+          setBusy(appState.busy);
         }} catch (error) {{
-          console.error('Status refresh failed', error);
+          console.error("Status refresh failed", error);
         }}
       }}
 
@@ -625,20 +751,151 @@ def _render_page(request: Request) -> str:
         try {{
           await navigator.clipboard.writeText(value);
           const original = button.textContent;
-          button.textContent = 'Copied';
+          button.textContent = "Copied";
           window.setTimeout(() => {{
             button.textContent = original;
           }}, 1400);
         }} catch (error) {{
-          console.error('Clipboard copy failed', error);
+          console.error("Clipboard copy failed", error);
         }}
       }}
 
-      document.querySelectorAll('[data-copy]').forEach((button) => {{
-        button.addEventListener('click', () => copyText(button.dataset.copy, button));
+      async function sendPrompt(text) {{
+        const trimmed = text.trim();
+        if (!trimmed || appState.busy || !appState.ready) {{
+          return;
+        }}
+
+        promptInput.value = "";
+        addMessage("user", trimmed);
+        setBusy(true);
+
+        const pendingIndex = appState.messages.length;
+        addMessage("system", "Working on it.");
+
+        try {{
+          const response = await fetch("/api/chat", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{
+              messages: appState.messages
+                .filter((message) => message.role === "user" || message.role === "assistant")
+                .map((message) => ({{ role: message.role, content: message.content }})),
+            }}),
+          }});
+
+          const data = await response.json();
+          appState.messages.splice(pendingIndex, 1);
+
+          if (!response.ok) {{
+            addMessage("system", data.error || "The local chat route failed.");
+          }} else {{
+            addMessage("assistant", data.reply || "I did not get a usable reply back.", data.tool_events || []);
+            speakReply(data.reply || "");
+          }}
+        }} catch (error) {{
+          appState.messages.splice(pendingIndex, 1);
+          addMessage("system", "The local route could not be reached.");
+          console.error("Chat request failed", error);
+        }} finally {{
+          setBusy(false);
+        }}
+      }}
+
+      function updateMicButton() {{
+        if (!recognition) {{
+          micButton.textContent = "Mic Unavailable";
+          micButton.disabled = true;
+          return;
+        }}
+
+        micButton.textContent = appState.listening ? "Listening..." : "Start Mic";
+        micButton.classList.toggle("listening", appState.listening);
+      }}
+
+      function setupRecognition() {{
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {{
+          updateMicButton();
+          return;
+        }}
+
+        recognition = new SpeechRecognition();
+        recognition.lang = "en-US";
+        recognition.interimResults = true;
+        recognition.continuous = false;
+
+        recognition.onresult = (event) => {{
+          let transcript = "";
+          for (let index = event.resultIndex; index < event.results.length; index += 1) {{
+            transcript += event.results[index][0].transcript;
+          }}
+          promptInput.value = transcript.trim();
+
+          const lastResult = event.results[event.results.length - 1];
+          if (lastResult && lastResult.isFinal) {{
+            const finalText = promptInput.value.trim();
+            if (finalText) {{
+              sendPrompt(finalText);
+            }}
+          }}
+        }};
+
+        recognition.onend = () => {{
+          appState.listening = false;
+          updateMicButton();
+        }};
+
+        recognition.onerror = () => {{
+          appState.listening = false;
+          updateMicButton();
+        }};
+
+        updateMicButton();
+      }}
+
+      document.querySelectorAll("[data-copy]").forEach((button) => {{
+        button.addEventListener("click", () => copyText(button.dataset.copy, button));
       }});
 
+      sendButton.addEventListener("click", () => sendPrompt(promptInput.value));
+      promptInput.addEventListener("keydown", (event) => {{
+        if (event.key === "Enter" && !event.shiftKey) {{
+          event.preventDefault();
+          sendPrompt(promptInput.value);
+        }}
+      }});
+
+      micButton.addEventListener("click", () => {{
+        if (!recognition || appState.busy) {{
+          return;
+        }}
+
+        if (appState.listening) {{
+          recognition.stop();
+          appState.listening = false;
+        }} else {{
+          promptInput.value = "";
+          appState.listening = true;
+          recognition.start();
+        }}
+        updateMicButton();
+      }});
+
+      speakToggle.addEventListener("change", () => {{
+        appState.speakReplies = speakToggle.checked;
+      }});
+
+      stopSpeechButton.addEventListener("click", () => {{
+        if ("speechSynthesis" in window) {{
+          window.speechSynthesis.cancel();
+        }}
+      }});
+
+      setupRecognition();
+      renderMessages();
       refreshStatus();
+      setBusy(false);
       window.setInterval(refreshStatus, 15000);
     </script>
   </body>
@@ -651,19 +908,51 @@ def register_web_routes(mcp) -> None:
         return _canonical_browser_host(request.url.hostname) != (request.url.hostname or "")
 
     @mcp.custom_route("/", methods=["GET"], include_in_schema=False)
-    async def connection_page(request: Request) -> Response:
+    async def local_console(request: Request) -> Response:
         if _needs_browser_redirect(request):
             return RedirectResponse(f"{_browser_base_url(request)}/", status_code=307)
         return HTMLResponse(_render_page(request))
 
     @mcp.custom_route("/status", methods=["GET"], include_in_schema=False)
-    async def connection_status(request: Request) -> Response:
+    async def local_status(request: Request) -> Response:
         if _needs_browser_redirect(request):
             return RedirectResponse(f"{_browser_base_url(request)}/status", status_code=307)
-        return JSONResponse(_connection_state(request))
+        return JSONResponse(_local_status(request))
+
+    @mcp.custom_route("/api/chat", methods=["POST"], include_in_schema=False)
+    async def local_chat_api(request: Request) -> Response:
+        if _needs_browser_redirect(request):
+            return RedirectResponse(f"{_browser_base_url(request)}/", status_code=307)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
+
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return JSONResponse({"error": "messages must be a list."}, status_code=400)
+
+        try:
+            result = await run_local_chat(messages, _mcp_server_url(request))
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:  # pragma: no cover - defensive route guard
+            logger.exception("Local chat request failed")
+            return JSONResponse(
+                {"error": f"Local chat failed unexpectedly: {exc}"},
+                status_code=500,
+            )
+
+        return JSONResponse(
+            {
+                "reply": result.reply,
+                "tool_events": result.tool_events,
+            }
+        )
 
     @mcp.custom_route("/connect", methods=["GET"], include_in_schema=False)
-    async def connection_redirect(request: Request) -> Response:
+    async def legacy_connect_redirect(request: Request) -> Response:
         if _needs_browser_redirect(request):
-            return RedirectResponse(f"{_browser_base_url(request)}/connect", status_code=307)
-        return RedirectResponse(PLAYGROUND_URL, status_code=307)
+            return RedirectResponse(f"{_browser_base_url(request)}/", status_code=307)
+        return RedirectResponse(f"{_browser_base_url(request)}/#pilot-console", status_code=307)

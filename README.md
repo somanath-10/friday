@@ -2,12 +2,12 @@
 
 > *"Fully Responsive Intelligent Digital Assistant for You"*
 
-A Tony Stark-inspired AI assistant split into two cooperating pieces:
+A Tony Stark-inspired AI assistant with a local browser mode and an optional legacy voice-worker mode:
 
 | Component | What it is |
 |-----------|-----------|
-| **MCP Server** (`uv run friday`) | A [FastMCP](https://github.com/jlowin/fastmcp) server that exposes tools (news, web search, system info, …) over SSE. Think of it as the Stark Industries backend — it does the actual work. |
-| **Voice Agent** (`uv run friday_voice`) | A [LiveKit Agents](https://github.com/livekit/agents) voice pipeline that listens to your microphone, reasons with an LLM (Gemini 2.5 Flash by default), and speaks back with your configured TTS provider — all while pulling tools from the MCP server in real time. |
+| **Local Console** (`uv run friday`) | A [FastMCP](https://github.com/jlowin/fastmcp) server that exposes tools over SSE and also serves a local browser page at `http://127.0.0.1:8000/`. This is now the primary way to use FRIDAY. |
+| **Legacy Voice Agent** (`uv run friday_voice`) | A [LiveKit Agents](https://github.com/livekit/agents) voice pipeline kept for compatibility. It is optional if you use the local browser page. |
 
 ---
 
@@ -35,7 +35,7 @@ The voice agent connects to the MCP server via SSE at `http://127.0.0.1:8000/sse
 
 - Python ≥ 3.11
 - [`uv`](https://github.com/astral-sh/uv) — `pip install uv` or `curl -Lsf https://astral.sh/uv/install.sh | sh`
-- A [LiveKit Cloud](https://cloud.livekit.io) project (free tier works)
+- An OpenAI API key for the local browser mode
 
 ### 2. Clone & install
 
@@ -52,24 +52,29 @@ cp .env.example .env
 # Open .env and fill in your API keys (see the section below)
 ```
 
-### 4. Run — two terminals
+### 4. Run — local browser mode
 
-**Terminal 1 — MCP server** (must start first)
+Start the server:
 
 ```bash
 uv run friday
 ```
 
-Starts the FastMCP server on `http://127.0.0.1:8000/sse`. The voice agent connects here to fetch its tools.
-It also serves a connection landing page at `http://127.0.0.1:8000/` so you have a simple place to start the session flow.
+Then open:
 
-**Terminal 2 — Voice agent**
+```text
+http://127.0.0.1:8000/
+```
+
+The local page now handles text chat, browser microphone input when supported, browser speech output, and backend MCP tool calls without sending you to the LiveKit playground.
+
+### 5. Optional legacy LiveKit mode
+
+If you still want the older LiveKit pipeline:
 
 ```bash
 uv run friday_voice
 ```
-
-Starts the LiveKit voice agent in **dev mode** — it joins a LiveKit room and begins listening. Open the [LiveKit Agents Playground](https://agents-playground.livekit.io) and connect to your room to talk to FRIDAY.
 
 ---
 
@@ -77,10 +82,8 @@ Starts the LiveKit voice agent in **dev mode** — it joins a LiveKit room and b
 
 | Command | Entry point | What it does |
 |---------|------------|--------------|
-| `uv run friday` | `server.py → main()` | Launches the **FastMCP server** over SSE transport on port 8000. This is the "brain backend" — it registers all tools, prompts, resources, and a lightweight landing page at `/` for starting the connection flow. |
-| `uv run friday_voice` | `agent_friday.py → dev()` | Launches the **LiveKit voice agent**. It builds the STT / LLM / TTS pipeline, connects to your LiveKit room, and wires up the MCP server as a tool source. The `dev()` wrapper auto-injects the `dev` CLI flag so you don't have to type it manually. |
-
-> Both processes must run **simultaneously**. The voice agent calls the MCP server in real time whenever it needs a tool (e.g. fetching news).
+| `uv run friday` | `server.py → main()` | Launches the **FastMCP server** and the local browser console at `/`. For most users this is the only command needed. |
+| `uv run friday_voice` | `agent_friday.py → dev()` | Launches the optional **LiveKit voice agent** for the older room-based flow. |
 
 ---
 
@@ -90,9 +93,9 @@ Copy `.env.example` → `.env` and fill in the values below.
 
 | Variable | Required | Where to get it |
 |----------|----------|----------------|
-| `LIVEKIT_URL` | ✅ | [LiveKit Cloud dashboard](https://cloud.livekit.io) → your project URL |
-| `LIVEKIT_API_KEY` | ✅ | LiveKit Cloud → API Keys |
-| `LIVEKIT_API_SECRET` | ✅ | LiveKit Cloud → API Keys |
+| `LIVEKIT_URL` | optional | Only needed for the legacy LiveKit flow |
+| `LIVEKIT_API_KEY` | optional | Only needed for the legacy LiveKit flow |
+| `LIVEKIT_API_SECRET` | optional | Only needed for the legacy LiveKit flow |
 | `GROQ_API_KEY` | optional | [console.groq.com](https://console.groq.com) — only needed if you switch `LLM_PROVIDER` to `"groq"` |
 | `SARVAM_API_KEY` | ✅ (default STT) | [dashboard.sarvam.ai](https://dashboard.sarvam.ai) |
 | `OPENAI_API_KEY` | ✅ (default TTS) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
