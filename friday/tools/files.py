@@ -206,7 +206,8 @@ def register(mcp):
                 return f"Path does not exist: {path}"
 
             if os.name == "nt":
-                result = subprocess.run(["explorer", path], capture_output=True, text=True, timeout=10)
+                os.startfile(path)
+                return f"Opened folder view: {path}"
             elif sys.platform == "darwin":
                 result = subprocess.run(["open", path], capture_output=True, text=True, timeout=10)
             else:

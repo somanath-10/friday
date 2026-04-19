@@ -370,9 +370,13 @@ def register(mcp):
                     reader = csv.reader(f)
                     try:
                         headers = next(reader)
-                        sample_rows = [next(reader) for _ in range(3)]
-                        # Count remaining rows
-                        row_count = 1 + len(sample_rows) + sum(1 for _ in reader)
+                        sample_rows = []
+                        for _ in range(3):
+                            try:
+                                sample_rows.append(next(reader))
+                            except StopIteration:
+                                break
+                        row_count = len(sample_rows) + sum(1 for _ in reader)
                         return json.dumps({
                             "type": "csv",
                             "columns": headers,

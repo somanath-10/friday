@@ -46,9 +46,13 @@ TASK_SYSTEM_PROMPTS = {
 }
 
 
+def _python_command() -> str:
+    return sys.executable or os.environ.get("PYTHON", "python")
+
+
 def main():
     if len(sys.argv) < 3:
-        sys.exit("Usage: python3 worker_core.py <objective> <workspace_dir> [task_type]")
+        sys.exit("Usage: python worker_core.py <objective> <workspace_dir> [task_type]")
 
     objective = sys.argv[1]
     workspace_dir = sys.argv[2]
@@ -152,7 +156,7 @@ def main():
                 env["PYTHONPATH"] = f"{project_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
 
                 sandbox_process = subprocess.run(
-                    ["python3", script_path],
+                    [_python_command(), script_path],
                     cwd=workspace_dir,
                     capture_output=True,
                     text=True,

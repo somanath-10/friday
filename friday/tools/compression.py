@@ -2,13 +2,62 @@
 Compression tools — zip, unzip, and inspect archives.
 Uses Python's built-in zipfile and tarfile — no dependencies required.
 """
-import os
+import shutil
 import zipfile
 import tarfile
 import time
 from pathlib import Path
 
-from friday.path_utils import resolve_user_path, workspace_dir, workspace_path
+from friday.path_utils import resolve_user_path, workspace_dir
+
+
+def _safe_extract_path(destination: Path, member_name: str) -> Path:
+    target = (destination.resolve() / member_name.replace("\\", "/")).resolve()
+    try:
+        target.relative_to(destination.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Archive member escapes destination: {member_name}") from exc
+    return target
+
+
+def _extract_zip_safely(archive: zipfile.ZipFile, destination: Path) -> int:
+    count = 0
+    for member in archive.infolist():
+        target = _safe_extract_path(destination, member.filename)
+        if member.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            count += 1
+            continue
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(member) as src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        count += 1
+    return count
+
+
+def _extract_tar_safely(archive: tarfile.TarFile, destination: Path) -> int:
+    count = 0
+    for member in archive.getmembers():
+        target = _safe_extract_path(destination, member.name)
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            count += 1
+            continue
+        if member.issym() or member.islnk():
+            raise ValueError(f"Archive contains unsupported link entry: {member.name}")
+        if not member.isfile():
+            raise ValueError(f"Archive contains unsupported entry type: {member.name}")
+
+        extracted = archive.extractfile(member)
+        if extracted is None:
+            raise ValueError(f"Archive member could not be read: {member.name}")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with extracted, open(target, "wb") as dst:
+            shutil.copyfileobj(extracted, dst)
+        count += 1
+    return count
 
 
 def register(mcp):
@@ -72,18 +121,16 @@ def register(mcp):
                     dest_name = Path(dest_name).stem
                 destination = str(workspace_dir() / dest_name)
 
-            dest_path = Path(destination)
+            dest_path = resolve_user_path(destination)
             dest_path.mkdir(parents=True, exist_ok=True)
             fname = archive.name.lower()
 
             if fname.endswith(".zip"):
                 with zipfile.ZipFile(archive, "r") as zf:
-                    zf.extractall(dest_path)
-                    count = len(zf.namelist())
+                    count = _extract_zip_safely(zf, dest_path)
             elif fname.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tar")):
                 with tarfile.open(archive, "r:*") as tf:
-                    tf.extractall(dest_path)
-                    count = len(tf.getnames())
+                    count = _extract_tar_safely(tf, dest_path)
             else:
                 return f"Unsupported archive format: {archive.suffix}. Supported: .zip, .tar.gz, .tar, .tgz"
 

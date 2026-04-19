@@ -5,14 +5,23 @@ Browser Automation tool — allows F.R.I.D.A.Y to operate a headless browser, na
 try:
     from playwright.async_api import async_playwright
 except ImportError:
-    pass  # Ensure playwright is installed
+    async_playwright = None
 
 _playwright = None
 _browser = None
 _page = None
 
+
+def _require_playwright() -> None:
+    if async_playwright is None:
+        raise RuntimeError(
+            "Playwright is not installed. Run `uv sync` and `playwright install chromium` before using browser tools."
+        )
+
+
 async def _get_page():
     global _playwright, _browser, _page
+    _require_playwright()
     if not _page:
         if not _playwright:
             _playwright = await async_playwright().start()

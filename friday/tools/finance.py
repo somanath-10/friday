@@ -3,7 +3,6 @@ Finance tools — real-time stocks, crypto prices, and currency conversion.
 All free APIs, no key required.
 """
 import httpx
-import re
 
 
 async def _fetch(client: httpx.AsyncClient, url: str, **kwargs) -> dict | None:
@@ -14,6 +13,31 @@ async def _fetch(client: httpx.AsyncClient, url: str, **kwargs) -> dict | None:
     except Exception:
         pass
     return None
+
+
+def _format_stock_summary(
+    *,
+    name: str,
+    symbol: str,
+    currency: str,
+    price: object,
+    change_str: str,
+    high: object,
+    low: object,
+    prev_close: object,
+    volume: object,
+    exchange: str,
+) -> str:
+    volume_str = f"{volume:,}" if isinstance(volume, int) else str(volume)
+    return (
+        f"=== {name} ({symbol}) ===\n"
+        f"Price     : {currency} {price}\n"
+        f"Change    : {change_str}\n"
+        f"Day H/L   : {high} / {low}\n"
+        f"Prev Close: {prev_close}\n"
+        f"Volume    : {volume_str}\n"
+        f"Exchange  : {exchange}"
+    )
 
 
 def register(mcp):
@@ -46,7 +70,7 @@ def register(mcp):
                 low = meta.get("regularMarketDayLow", "N/A")
                 volume = meta.get("regularMarketVolume", "N/A")
 
-                if isinstance(price, float) and isinstance(prev_close, float):
+                if isinstance(price, (int, float)) and isinstance(prev_close, (int, float)) and prev_close != 0:
                     change = price - prev_close
                     change_pct = (change / prev_close) * 100
                     direction = "+" if change >= 0 else ""
@@ -54,14 +78,17 @@ def register(mcp):
                 else:
                     change_str = "N/A"
 
-                return (
-                    f"=== {name} ({symbol}) ===\n"
-                    f"Price     : {currency} {price}\n"
-                    f"Change    : {change_str}\n"
-                    f"Day H/L   : {high} / {low}\n"
-                    f"Prev Close: {prev_close}\n"
-                    f"Volume    : {volume:,}" if isinstance(volume, int) else f"Volume    : {volume}\n"
-                    f"Exchange  : {exchange}"
+                return _format_stock_summary(
+                    name=name,
+                    symbol=symbol,
+                    currency=currency,
+                    price=price,
+                    change_str=change_str,
+                    high=high,
+                    low=low,
+                    prev_close=prev_close,
+                    volume=volume,
+                    exchange=exchange,
                 )
         except Exception as e:
             return f"Error fetching stock price for '{symbol}': {str(e)}"

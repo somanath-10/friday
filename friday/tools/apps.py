@@ -316,9 +316,9 @@ def register(mcp):
                     f"$img = New-Object System.Drawing.Bitmap $bmp.Width,$bmp.Height; "
                     f"$g = [System.Drawing.Graphics]::FromImage($img); "
                     f"$g.CopyFromScreen($bmp.Location, [System.Drawing.Point]::Empty, $bmp.Size); "
-                    f"$img.Save('{save_path}');"
+                    f"$img.Save({_ps_quote(save_path)});"
                 )
-                result = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True, timeout=15)
+                result = _powershell(ps_script, timeout=15)
             else:  # Linux
                 # Try scrot, then gnome-screenshot, then import (ImageMagick)
                 for cmd in [
@@ -377,10 +377,7 @@ def register(mcp):
             if OS == "Darwin":
                 process = subprocess.run(["pbcopy"], input=text, capture_output=True, text=True, timeout=5)
             elif OS == "Windows":
-                process = subprocess.run(
-                    ["powershell", "-Command", f"Set-Clipboard -Value '{text}'"],
-                    capture_output=True, text=True, timeout=5
-                )
+                process = _powershell(f"Set-Clipboard -Value {_ps_quote(text)}", timeout=5)
             else:  # Linux
                 for cmd_prefix in [["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]]:
                     process = subprocess.run(cmd_prefix, input=text, capture_output=True, text=True, timeout=5)
@@ -414,12 +411,12 @@ def register(mcp):
                 ps_script = (
                     f"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; "
                     f"$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
-                    f"$template.SelectSingleNode('//text[@id=1]').InnerText = '{title}'; "
-                    f"$template.SelectSingleNode('//text[@id=2]').InnerText = '{message}'; "
+                    f"$template.SelectSingleNode('//text[@id=1]').InnerText = {_ps_quote(title)}; "
+                    f"$template.SelectSingleNode('//text[@id=2]').InnerText = {_ps_quote(message)}; "
                     f"$toast = [Windows.UI.Notifications.ToastNotification]::new($template); "
                     f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('FRIDAY').Show($toast);"
                 )
-                result = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True, timeout=10)
+                result = _powershell(ps_script, timeout=10)
             else:  # Linux
                 result = subprocess.run(
                     ["notify-send", title, message],
@@ -461,11 +458,10 @@ def register(mcp):
                         )
                         subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"], timeout=5)
                     elif OS == "Windows":
-                        subprocess.run(
-                            ["powershell", "-Command",
-                             f"[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
-                             f"[System.Windows.Forms.MessageBox]::Show('{msg}', '⏰ Timer Done')"],
-                            timeout=10
+                        _powershell(
+                            f"[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
+                            f"[System.Windows.Forms.MessageBox]::Show({_ps_quote(msg)}, {_ps_quote('Timer Done')})",
+                            timeout=10,
                         )
                     else:  # Linux
                         subprocess.run(["notify-send", "⏰ Timer Done", msg], timeout=5)
