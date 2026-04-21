@@ -25,7 +25,7 @@ logger = logging.getLogger("friday.local_chat")
 load_dotenv()
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
-MAX_TOOL_ROUNDS = int(os.getenv("FRIDAY_LOCAL_MAX_TOOL_ROUNDS", "8"))
+MAX_TOOL_ROUNDS = int(os.getenv("FRIDAY_LOCAL_MAX_TOOL_ROUNDS", "14"))
 MAX_HISTORY_MESSAGES = int(os.getenv("FRIDAY_LOCAL_MAX_HISTORY_MESSAGES", "18"))
 MAX_TOOL_OUTPUT_CHARS = int(os.getenv("FRIDAY_LOCAL_MAX_TOOL_OUTPUT_CHARS", "6000"))
 EXCLUDED_TOOLS = {"voice_filler"}

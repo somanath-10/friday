@@ -11,10 +11,71 @@ import threading
 import time
 import platform
 from pathlib import Path
+from typing import Any
 
 from friday.path_utils import safe_filename, workspace_dir, workspace_path
 
 OS = platform.system()  # "Darwin" | "Linux" | "Windows"
+
+WINDOWS_APP_ALIASES = {
+    "chrome": ["Google Chrome", "chrome"],
+    "google chrome": ["Google Chrome", "chrome"],
+    "postman": ["Postman", "postman"],
+    "edge": ["msedge", "Microsoft Edge"],
+    "microsoft edge": ["Microsoft Edge", "msedge"],
+    "firefox": ["firefox", "Mozilla Firefox"],
+    "vscode": ["code", "Visual Studio Code"],
+    "vs code": ["code", "Visual Studio Code"],
+    "visual studio code": ["Visual Studio Code", "code"],
+    "code": ["code", "Visual Studio Code"],
+    "terminal": ["wt", "Windows Terminal", "powershell"],
+    "windows terminal": ["wt", "Windows Terminal"],
+    "wt": ["wt", "Windows Terminal"],
+    "powershell": ["powershell", "pwsh", "Windows PowerShell"],
+    "pwsh": ["pwsh", "powershell"],
+    "command prompt": ["cmd", "Command Prompt"],
+    "cmd": ["cmd", "Command Prompt"],
+    "notepad": ["notepad", "Notepad"],
+    "explorer": ["explorer", "File Explorer"],
+    "file explorer": ["explorer", "File Explorer"],
+}
+
+WINDOWS_TERMINAL_ALIASES = {
+    "terminal": ("wt", "Windows Terminal"),
+    "windows terminal": ("wt", "Windows Terminal"),
+    "wt": ("wt", "Windows Terminal"),
+    "powershell": ("powershell", "powershell"),
+    "pwsh": ("pwsh", "pwsh"),
+    "cmd": ("cmd", "cmd"),
+    "command prompt": ("cmd", "cmd"),
+}
+
+WINDOWS_CHROME_APP_NAMES = {"chrome", "google chrome"}
+WINDOWS_CHROME_STOPWORDS = {
+    "account",
+    "accounts",
+    "browser",
+    "chrome",
+    "google",
+    "open",
+    "profile",
+    "profiles",
+    "use",
+}
+WINDOWS_ORDINAL_WORDS = {
+    "first": 0,
+    "1st": 0,
+    "second": 1,
+    "2nd": 1,
+    "third": 2,
+    "3rd": 2,
+    "fourth": 3,
+    "4th": 3,
+    "fifth": 4,
+    "5th": 4,
+    "sixth": 5,
+    "6th": 5,
+}
 
 
 def _workspace_dir() -> str:
@@ -59,6 +120,285 @@ def _load_pyautogui():
     pyautogui.FAILSAFE = False
     pyautogui.PAUSE = 0
     return pyautogui
+
+
+def _normalized_app_name(value: str) -> str:
+    return " ".join(value.strip().lower().split())
+
+
+def _candidate_names(app_name: str) -> list[str]:
+    normalized = _normalized_app_name(app_name)
+    candidates = WINDOWS_APP_ALIASES.get(normalized, [])
+    ordered = [*candidates, app_name.strip()]
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in ordered:
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(cleaned)
+    return unique
+
+
+def _resolve_terminal_target(shell_name: str) -> tuple[str, str]:
+    normalized = _normalized_app_name(shell_name) or "powershell"
+    return WINDOWS_TERMINAL_ALIASES.get(normalized, (shell_name.strip() or "powershell", shell_name.strip() or "powershell"))
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(cleaned)
+    return unique
+
+
+def _windows_chrome_user_data_dir() -> Path | None:
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if not local_app_data:
+        return None
+    user_data = Path(local_app_data) / "Google" / "Chrome" / "User Data"
+    return user_data if user_data.is_dir() else None
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _windows_chrome_local_state() -> dict[str, Any]:
+    user_data = _windows_chrome_user_data_dir()
+    if user_data is None:
+        return {}
+    return _read_json_file(user_data / "Local State")
+
+
+def _windows_chrome_profiles() -> list[dict[str, Any]]:
+    user_data = _windows_chrome_user_data_dir()
+    if user_data is None:
+        return []
+
+    local_state = _windows_chrome_local_state()
+    profile_state = local_state.get("profile")
+    if not isinstance(profile_state, dict):
+        profile_state = {}
+    info_cache = profile_state.get("info_cache")
+    if not isinstance(info_cache, dict):
+        info_cache = {}
+
+    profile_dirs: list[str] = []
+    for value in profile_state.get("profiles_order", []):
+        if isinstance(value, str):
+            profile_dirs.append(value)
+    for value in profile_state.get("last_active_profiles", []):
+        if isinstance(value, str):
+            profile_dirs.append(value)
+    last_used = profile_state.get("last_used")
+    if isinstance(last_used, str):
+        profile_dirs.append(last_used)
+    for value in info_cache.keys():
+        if isinstance(value, str):
+            profile_dirs.append(value)
+    for child in sorted(user_data.iterdir(), key=lambda item: item.name.lower()):
+        if not child.is_dir():
+            continue
+        if child.name == "Default" or child.name.startswith("Profile "):
+            profile_dirs.append(child.name)
+
+    ordered_dirs = _unique_strings(profile_dirs)
+    active_dirs = {
+        value for value in profile_state.get("last_active_profiles", [])
+        if isinstance(value, str)
+    }
+    records: list[dict[str, Any]] = []
+    for index, directory in enumerate(ordered_dirs, start=1):
+        info = info_cache.get(directory)
+        if not isinstance(info, dict):
+            info = {}
+        profile_path = user_data / directory
+        record = {
+            "index": index,
+            "directory": directory,
+            "name": str(info.get("name") or directory),
+            "shortcut_name": str(info.get("shortcut_name") or ""),
+            "email": str(info.get("user_name") or ""),
+            "gaia_name": str(info.get("gaia_name") or ""),
+            "gaia_given_name": str(info.get("gaia_given_name") or ""),
+            "managed": bool(info.get("is_managed")),
+            "available": profile_path.is_dir(),
+            "last_used": directory == profile_state.get("last_used"),
+            "active": directory in active_dirs,
+        }
+        records.append(record)
+    return records
+
+
+def _windows_default_chrome_profile(profiles: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for profile in profiles:
+        if profile.get("last_used"):
+            return profile
+    for profile in profiles:
+        if profile.get("active"):
+            return profile
+    return profiles[0] if profiles else None
+
+
+def _windows_chrome_profile_queries(profile_hint: str) -> list[str]:
+    raw = _normalized_app_name(profile_hint)
+    if not raw:
+        return []
+    reduced = " ".join(
+        word for word in raw.split()
+        if word not in WINDOWS_CHROME_STOPWORDS
+    )
+    return _unique_strings([raw, reduced])
+
+
+def _windows_chrome_profile_index(profile_hint: str) -> int | None:
+    for word in _normalized_app_name(profile_hint).split():
+        if word in WINDOWS_ORDINAL_WORDS:
+            return WINDOWS_ORDINAL_WORDS[word]
+    return None
+
+
+def _windows_chrome_profile_score(profile: dict[str, Any], profile_hint: str) -> int:
+    score = 0
+    tokens = _unique_strings(
+        [
+            str(profile.get("directory", "")),
+            str(profile.get("name", "")),
+            str(profile.get("shortcut_name", "")),
+            str(profile.get("email", "")),
+            str(profile.get("gaia_name", "")),
+            str(profile.get("gaia_given_name", "")),
+        ]
+    )
+    normalized_tokens = [_normalized_app_name(token) for token in tokens if token.strip()]
+    for query in _windows_chrome_profile_queries(profile_hint):
+        for token in normalized_tokens:
+            if not token:
+                continue
+            if query == token:
+                return 100
+            if token.startswith(query):
+                score = max(score, 90)
+            if query in token:
+                score = max(score, 80)
+            if all(word in token for word in query.split()):
+                score = max(score, 70)
+    return score
+
+
+def _windows_find_chrome_profile(profile_hint: str) -> dict[str, Any] | None:
+    profiles = _windows_chrome_profiles()
+    if not profiles:
+        return None
+
+    index = _windows_chrome_profile_index(profile_hint)
+    if index is not None and 0 <= index < len(profiles):
+        return profiles[index]
+
+    best_match: dict[str, Any] | None = None
+    best_score = 0
+    for profile in profiles:
+        score = _windows_chrome_profile_score(profile, profile_hint)
+        if score > best_score:
+            best_match = profile
+            best_score = score
+    return best_match if best_score > 0 else None
+
+
+def _windows_search_result_path(value: str) -> str:
+    candidate = value.split(" :: ", 1)[0].strip().strip('"')
+    if "," in candidate and candidate.lower().endswith(".exe,0"):
+        candidate = candidate.rsplit(",", 1)[0]
+    return candidate.strip()
+
+
+def _windows_find_chrome_executable() -> str:
+    roots = [
+        Path(os.environ.get("ProgramFiles", "")),
+        Path(os.environ.get("ProgramFiles(x86)", "")),
+        Path(os.environ.get("LOCALAPPDATA", "")),
+    ]
+    for root in roots:
+        if not str(root).strip():
+            continue
+        candidate = root / "Google" / "Chrome" / "Application" / "chrome.exe"
+        if candidate.is_file():
+            return str(candidate)
+
+    for query in ["Google Chrome", "chrome"]:
+        try:
+            results = _windows_search_results(query, limit=20)
+        except RuntimeError:
+            continue
+        for value in results:
+            candidate = _windows_search_result_path(value)
+            lowered = candidate.lower()
+            if lowered.endswith("\\chrome.exe") and "proxy" not in lowered and "new_chrome" not in lowered and Path(candidate).is_file():
+                return candidate
+    return ""
+
+
+def _launch_process(command: list[str], cwd: str = "") -> None:
+    kwargs: dict[str, Any] = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if cwd:
+        kwargs["cwd"] = cwd
+    if OS == "Windows":
+        kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen(command, **kwargs)
+
+
+def _windows_open_chrome(profile_hint: str = "", url: str = "", guest: bool = False) -> str:
+    chrome_executable = _windows_find_chrome_executable()
+    if not chrome_executable:
+        return _windows_launch_application("Google Chrome")
+
+    arguments: list[str] = []
+    profile_label = ""
+    if guest:
+        arguments.append("--guest")
+        profile_label = "guest mode"
+    else:
+        profiles = _windows_chrome_profiles()
+        profile = _windows_default_chrome_profile(profiles) if not profile_hint.strip() else _windows_find_chrome_profile(profile_hint)
+        if profile is None and profile_hint.strip():
+            names = ", ".join(
+                f"{item['name']} [{item['directory']}]"
+                for item in profiles[:8]
+            )
+            raise RuntimeError(
+                f"Chrome profile '{profile_hint}' was not found. Available profiles: {names or 'none detected'}."
+            )
+        if profile is not None:
+            arguments.append(f"--profile-directory={profile['directory']}")
+            profile_label = f"{profile['name']} [{profile['directory']}]"
+
+    if url.strip():
+        arguments.append(url.strip())
+
+    _launch_process([chrome_executable, *arguments], cwd=str(Path(chrome_executable).parent))
+    if profile_label:
+        return f"Launched Google Chrome with profile: {profile_label}."
+    return "Launched Google Chrome."
 
 
 def _normalize_hotkey_part(value: str) -> str:
@@ -148,6 +488,24 @@ def _windows_paste_text(text: str, press_enter: bool) -> str:
     return f"Typed {len(text)} characters" + (" and pressed Enter." if press_enter else ".")
 
 
+def _windows_focus_window(name: str | list[str], timeout_seconds: float = 6.0) -> str:
+    candidates = [name] if isinstance(name, str) else name
+    ordered = [candidate.strip() for candidate in candidates if str(candidate).strip()]
+    deadline = time.time() + max(0.5, timeout_seconds)
+    while time.time() < deadline:
+        for candidate in ordered:
+            ps_script = (
+                "$wshell = New-Object -ComObject WScript.Shell; "
+                f"$focused = $wshell.AppActivate({_ps_quote(candidate)}); "
+                "if ($focused) { Write-Output 'focused' } else { exit 1 }"
+            )
+            result = _powershell(ps_script, timeout=5)
+            if result.returncode == 0:
+                return candidate
+        time.sleep(0.25)
+    return ""
+
+
 def _windows_search_results(query: str, limit: int = 20) -> list[str]:
     escaped_query = _ps_quote(query)
     ps_script = f"""
@@ -215,7 +573,7 @@ $results | Select-Object -First $limit
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def _windows_launch_application(app_name: str) -> str:
+def _windows_launch_application_once(app_name: str) -> str:
     escaped_name = _ps_quote(app_name)
     ps_script = f"""
 $app = {escaped_name}
@@ -272,6 +630,16 @@ exit 1
         target = launched[-1] if launched else app_name
         return f"Launched application: {target}"
     raise RuntimeError(result.stderr.strip() or f"Could not launch {app_name}")
+
+
+def _windows_launch_application(app_name: str) -> str:
+    last_error = ""
+    for candidate in _candidate_names(app_name):
+        try:
+            return _windows_launch_application_once(candidate)
+        except RuntimeError as exc:
+            last_error = str(exc)
+    raise RuntimeError(last_error or f"Could not launch {app_name}")
 
 
 def _windows_installed_apps(query: str = "", limit: int = 50) -> list[str]:
@@ -341,6 +709,8 @@ def register(mcp):
                     return f"Launched application: {app_name}"
                 return f"Could not launch '{app_name}': {result.stderr.strip()}"
             elif OS == "Windows":
+                if _normalized_app_name(app_name) in WINDOWS_CHROME_APP_NAMES:
+                    return _windows_open_chrome()
                 return _windows_launch_application(app_name)
             else:
                 result = subprocess.run(["xdg-open", app_name], capture_output=True, text=True, timeout=10)
@@ -349,6 +719,122 @@ def register(mcp):
                 return f"Could not launch '{app_name}': {result.stderr.strip()}"
         except Exception as e:
             return f"Error launching application: {str(e)}"
+
+    @mcp.tool()
+    def list_chrome_profiles() -> str:
+        """
+        List detected Google Chrome profiles on Windows.
+        Use this when the boss mentions multiple Chrome accounts or wants a specific profile.
+        """
+        try:
+            if OS != "Windows":
+                return "Chrome profile listing is currently supported on Windows only."
+
+            profiles = _windows_chrome_profiles()
+            if not profiles:
+                return "Chrome profile data is not available on this machine."
+
+            local_state = _windows_chrome_local_state()
+            profile_state = local_state.get("profile")
+            if not isinstance(profile_state, dict):
+                profile_state = {}
+            picker_enabled = bool(profile_state.get("show_picker_on_startup"))
+            last_used = str(profile_state.get("last_used") or "")
+
+            lines = [
+                f"Chrome profiles ({len(profiles)}):",
+                f"Picker on startup: {'enabled' if picker_enabled else 'disabled'}",
+                f"Last used profile: {last_used or 'unknown'}",
+            ]
+            for profile in profiles:
+                labels: list[str] = []
+                if profile.get("last_used"):
+                    labels.append("last used")
+                if profile.get("active"):
+                    labels.append("active")
+                if profile.get("managed"):
+                    labels.append("managed")
+                summary = f"  - {profile['index']}. {profile['name']} [{profile['directory']}]"
+                if profile.get("email"):
+                    summary += f" <{profile['email']}>"
+                if labels:
+                    summary += f" ({', '.join(labels)})"
+                lines.append(summary)
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error listing Chrome profiles: {str(e)}"
+
+    @mcp.tool()
+    def open_chrome_profile(profile_name: str = "", url: str = "", guest: bool = False) -> str:
+        """
+        Open Google Chrome directly into a chosen profile on Windows.
+        Use this when the boss says 'open Chrome work profile', 'open my second Chrome account',
+        or when the Chrome profile picker causes trouble.
+        """
+        try:
+            if OS != "Windows":
+                return open_application("chrome")
+            return _windows_open_chrome(profile_hint=profile_name, url=url, guest=guest)
+        except Exception as e:
+            return f"Error opening Chrome profile: {str(e)}"
+
+    @mcp.tool()
+    def open_terminal(shell_name: str = "powershell", wait_ms: int = 900) -> str:
+        """
+        Open a terminal window and try to focus it.
+        On Windows, common values are: 'terminal', 'powershell', 'pwsh', and 'cmd'.
+        Use this when the user says 'open terminal', 'open PowerShell', or wants a visible shell window.
+        """
+        try:
+            if OS == "Windows":
+                launch_name, default_focus = _resolve_terminal_target(shell_name)
+                launch_result = _windows_launch_application(launch_name)
+                time.sleep(max(0, wait_ms) / 1000.0)
+                focus_candidates = [default_focus, shell_name, *_candidate_names(shell_name)]
+                focused = _windows_focus_window(focus_candidates, timeout_seconds=4.0)
+                if focused:
+                    return f"{launch_result} Focused terminal window: {focused}."
+                return f"{launch_result} The terminal opened, but focus could not be confirmed."
+
+            if OS == "Darwin":
+                app_name = "Terminal" if not shell_name.strip() else shell_name
+                result = subprocess.run(["open", "-a", app_name], capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    return f"Launched terminal: {app_name}"
+                return f"Could not launch terminal '{app_name}': {result.stderr.strip()}"
+
+            terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"]
+            choice = shell_name.strip() or terminals[0]
+            for candidate in [choice, *[item for item in terminals if item != choice]]:
+                result = subprocess.run([candidate], capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    return f"Launched terminal: {candidate}"
+            return f"Could not launch terminal '{shell_name or terminals[0]}'."
+        except Exception as e:
+            return f"Error opening terminal: {str(e)}"
+
+    @mcp.tool()
+    def open_terminal_and_type(command: str, shell_name: str = "powershell", press_enter: bool = True, wait_ms: int = 1200) -> str:
+        """
+        Open a terminal window, focus it, and type a command.
+        Set press_enter=false if the user wants the command typed but not executed yet.
+        Use this for requests like 'open terminal and type npm run dev'.
+        """
+        try:
+            if not command.strip():
+                return "No command provided."
+
+            open_result = open_terminal(shell_name=shell_name, wait_ms=wait_ms)
+            if open_result.lower().startswith("error") or "could not launch" in open_result.lower():
+                return open_result
+
+            time.sleep(max(0, wait_ms) / 1000.0)
+            typed = type_text(command, press_enter=press_enter, interval_ms=15)
+            if typed.lower().startswith("error"):
+                return f"{open_result} {typed}"
+            return f"{open_result} {typed}"
+        except Exception as e:
+            return f"Error opening terminal and typing command: {str(e)}"
 
     @mcp.tool()
     def close_application(app_name: str) -> str:

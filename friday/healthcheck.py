@@ -384,6 +384,7 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
     await expect_text("tool.get_current_time", "get_current_time", {}, lambda output: "ISO 8601:" in output)
     await expect_text("tool.get_system_telemetry", "get_system_telemetry", {}, lambda output: "os" in output.lower())
     await expect_text("tool.get_environment_info", "get_environment_info", {}, lambda output: "workspace:" in output.lower())
+    await expect_text("tool.get_host_control_status", "get_host_control_status", {}, lambda output: "\"workspace\"" in output or "workspace" in output.lower())
     await expect_text(
         "tool.scan_system_inventory",
         "scan_system_inventory",
@@ -410,6 +411,14 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
     await expect_text("tool.read_file_snippet", "read_file_snippet", {"file_path": "demo.txt", "start_line": 1, "end_line": 2}, lambda output: "demo.txt" in output)
     await expect_text("tool.list_directory_tree", "list_directory_tree", {"path": "."}, lambda output: "demo.txt" in output)
     await expect_text("tool.search_in_files", "search_in_files", {"directory": ".", "keyword": "hello demo"}, lambda output: "demo.txt" in output)
+    await expect_text("tool.copy_path", "copy_path", {"source_path": "demo.txt", "destination_path": "copies/demo_copy.txt"}, lambda output: "Copied file" in output)
+    await expect_text("tool.move_path", "move_path", {"source_path": "copies/demo_copy.txt", "destination_path": "moved/demo_final.txt"}, lambda output: "Moved path" in output)
+    await expect_text("tool.delete_path", "delete_path", {"path": "moved/demo_final.txt"}, lambda output: "Deleted file" in output)
+    await expect_text("tool.search_local_apps", "search_local_apps", {"query": "edge"}, lambda output: bool(output.strip()))
+    await expect_text("tool.list_chrome_profiles", "list_chrome_profiles", {}, lambda output: bool(output.strip()))
+    await expect_text("tool.inspect_desktop_screen", "inspect_desktop_screen", {"question": "What is visible right now?"}, lambda output: "Desktop screenshot:" in output or "Error inspecting desktop screen" not in output)
+    await expect_text("tool.get_codex_relay_status", "get_codex_relay_status", {}, lambda output: "project_path" in output)
+    await expect_text("tool.build_codex_project_brief", "build_codex_project_brief", {}, lambda output: "Project root:" in output)
 
     csv_path = Path(os.environ["FRIDAY_WORKSPACE_DIR"]) / "data.csv"
     csv_path.write_text("name,score\nTony,99\nPepper,97\n", encoding="utf-8")
@@ -472,7 +481,10 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
     port = int(listener.getsockname()[1])
 
     def _accept_once() -> None:
-        conn, _ = listener.accept()
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
         conn.close()
 
     accept_thread = threading.Thread(target=_accept_once, daemon=True)
@@ -489,7 +501,8 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
         fetch_url = f"http://127.0.0.1:{httpd.server_port}/"
         await expect_text("tool.fetch_url", "fetch_url", {"url": fetch_url}, lambda output: "Local fetch works" in output)
         if _browser_check_enabled():
-            await expect_text("tool.browser_navigate", "browser_navigate", {"url": fetch_url}, lambda output: "Navigated to" in output)
+            await expect_text("tool.browser_navigate", "browser_navigate", {"url": fetch_url}, lambda output: "Page title:" in output and "URL:" in output)
+            await expect_text("tool.browser_get_state", "browser_get_state", {}, lambda output: "Interactive elements:" in output)
             await expect_text("tool.browser_read_page", "browser_read_page", {}, lambda output: "FRIDAY Healthcheck" in output)
             await expect_text("tool.browser_close", "browser_close", {}, lambda output: "closed successfully" in output.lower())
         else:

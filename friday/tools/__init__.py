@@ -16,6 +16,7 @@ from friday.tools import (
     translate,   # Language translation via MyMemory (no API key required)
     shell,       # Raw shell command execution
     browser,     # Headless Chromium automation via Playwright
+    operator,    # Screen-aware desktop inspection and target grounding
 
     finance,     # Stock prices, crypto, currency conversion (all free)
     git_tool,    # Git operations: status, log, diff, commit, push, pull, clone
@@ -25,6 +26,7 @@ from friday.tools import (
     image_tool,  # AI image generation (Pollinations.ai), resize, convert
     calendar_tool,  # Calendar events (.ics) and reminders
     firecrawl_tool, # SOTA web scraping/research
+    codex_tool,  # VS Code Codex relay and project snapshot helpers
 )
 
 
@@ -42,6 +44,7 @@ def register_all_tools(mcp):
     translate.register(mcp)
     shell.register(mcp)
     browser.register(mcp)
+    operator.register(mcp)
 
     finance.register(mcp)
     git_tool.register(mcp)
@@ -51,4 +54,5 @@ def register_all_tools(mcp):
     image_tool.register(mcp)
     calendar_tool.register(mcp)
     firecrawl_tool.register(mcp)
+    codex_tool.register(mcp)
 

@@ -37,6 +37,12 @@ FRIDAY can now operate much more of the local machine from the browser chat or v
 - inspect open windows, installed software, startup items, services, scheduled tasks, and disk drives
 - open folders and URLs, manage files across Desktop/Documents/Downloads/Workspace, and take screenshots
 - type into the focused app, send hotkeys, use the clipboard, and run shell commands when needed
+- open a visible terminal window and type commands into it when you explicitly ask
+- open files with their default apps, and copy, move, or delete files and folders across the machine
+- detect Chrome profiles and open a specific Chrome account directly, which helps skip the Chrome account picker on multi-profile setups
+- inspect the live desktop with screenshots and optional vision analysis before clicking or typing, and estimate target coordinates for GUI actions
+- inspect browser pages as indexed interactive elements, then click or type by element number instead of relying only on CSS selectors
+- relay spoken or typed requests into the VS Code Codex extension with a local project snapshot first
 
 FRIDAY still works within the permissions of the user account and shell you start it with. Tasks that require administrator rights still need the host process to be run elevated.
 
@@ -72,6 +78,8 @@ Start the server:
 uv run friday
 ```
 
+For the broadest Windows control, start the terminal itself with **Run as administrator** before launching FRIDAY. Without that, standard user tasks will still work, but administrator-only actions can fail.
+
 Then open:
 
 ```text
@@ -79,6 +87,31 @@ http://127.0.0.1:8000/
 ```
 
 The local page now handles text chat, browser microphone input when supported, browser speech output, and backend MCP tool calls without sending you to the LiveKit playground.
+
+If you want FRIDAY's Playwright browser actions to be visible on screen instead of hidden, set:
+
+```text
+FRIDAY_BROWSER_HEADLESS=0
+```
+
+On Windows, plain `open chrome` now prefers a detected Chrome profile instead of the Chrome account picker when multiple profiles exist. FRIDAY can also list the available Chrome profiles and open a specific one by name.
+
+For more reliable GUI work, FRIDAY now has screen-aware operator tools. It can capture the live desktop, summarize what is visible, and estimate where a requested button or field is located before using mouse or keyboard tools. If `OPENAI_API_KEY` is configured, these tools use a vision-capable OpenAI model; set `OPENAI_VISION_MODEL` if you want to override the default.
+
+### 4a. Optional: VS Code Codex relay mode
+
+The browser console now has a **Dispatch Mode** switch:
+
+- `FRIDAY Local Chat` keeps the existing in-browser FRIDAY assistant flow
+- `VS Code Codex Relay` opens or focuses VS Code, opens the Codex sidebar, starts a fresh thread, and pastes a project-aware prompt
+
+Relay mode is built for workflows like "listen to my voice, open this project in VS Code, and send the job to Codex." By default it targets the current repo root, but you can override that with `FRIDAY_CODEX_PROJECT_DIR`.
+
+Requirements for relay mode:
+
+- VS Code must be installed and the `code` launcher should be available, or set `FRIDAY_CODEX_VSCODE_EXECUTABLE`
+- the OpenAI VS Code extension (`openai.chatgpt`, displayed as **Codex – OpenAI's coding agent**) must be installed
+- browser microphone support still depends on Edge or Chrome speech APIs
 
 To run a local verification pass before using it:
 
@@ -137,6 +170,11 @@ Copy `.env.example` → `.env` and fill in the values below.
 | `GOOGLE_APPLICATION_CREDENTIALS` | optional | GCP service-account JSON path — only for `STT_PROVIDER = "google"` |
 | `GOOGLE_API_KEY` | ✅ (default LLM) | [aistudio.google.com](https://aistudio.google.com/projects) |
 | `FRIDAY_MAX_TOOL_STEPS` | optional | Raises per-turn tool budget for more complex tasks; default is `8` |
+| `FRIDAY_LOCAL_MAX_TOOL_ROUNDS` | optional | Raises the local browser chat tool-call budget; default is `14` |
+| `FRIDAY_BROWSER_HEADLESS` | optional | Set to `0` for a visible automation browser, or `1` for hidden Playwright sessions |
+| `OPENAI_VISION_MODEL` | optional | Override the model used by desktop vision tools; otherwise FRIDAY reuses `OPENAI_LLM_MODEL` |
+| `FRIDAY_CODEX_PROJECT_DIR` | optional | Default folder that relay mode opens in VS Code before sending your prompt |
+| `FRIDAY_CODEX_VSCODE_EXECUTABLE` | optional | Explicit path to `code` / `Code.exe` if the VS Code launcher is not on `PATH` |
 | `SUPABASE_URL` | optional | [supabase.com](https://supabase.com) — for the ticketing tool |
 | `SUPABASE_API_KEY` | optional | Supabase project → API settings |
 

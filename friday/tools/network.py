@@ -81,7 +81,10 @@ def register(mcp):
         """
         try:
             hostname = socket.gethostname()
-            local_ip = socket.gethostbyname(hostname)
+            try:
+                local_ip = socket.gethostbyname(hostname)
+            except Exception:
+                local_ip = "Unknown"
             lines = [
                 f"Hostname  : {hostname}",
                 f"Local IP  : {local_ip}",
@@ -99,13 +102,16 @@ def register(mcp):
                     lines.append("\nNetwork Interfaces (IPv4):")
                     lines.append(result.stdout.strip())
                 # Default gateway
-                gw_result = subprocess.run(
-                    ["powershell", "-Command",
-                     "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop"],
-                    capture_output=True, text=True, timeout=10
-                )
-                if gw_result.returncode == 0 and gw_result.stdout.strip():
-                    lines.append(f"Default GW: {gw_result.stdout.strip()}")
+                try:
+                    gw_result = subprocess.run(
+                        ["powershell", "-Command",
+                         "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop"],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    if gw_result.returncode == 0 and gw_result.stdout.strip():
+                        lines.append(f"Default GW: {gw_result.stdout.strip()}")
+                except subprocess.TimeoutExpired:
+                    lines.append("Default GW: lookup timed out")
             elif OS == "Darwin":
                 result = subprocess.run(["ifconfig", "-a"], capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:

@@ -4,6 +4,7 @@ open in Finder, and manage the workspace directory.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -20,6 +21,28 @@ from friday.path_utils import (
 
 def _workspace_dir() -> str:
     return str(workspace_dir())
+
+
+def _open_path_default(path: str) -> str:
+    if not path:
+        path = _workspace_dir()
+    else:
+        path = str(resolve_user_path(path))
+
+    if not os.path.exists(path):
+        return f"Path does not exist: {path}"
+
+    if os.name == "nt":
+        os.startfile(path)
+        return f"Opened path: {path}"
+    if sys.platform == "darwin":
+        result = subprocess.run(["open", path], capture_output=True, text=True, timeout=10)
+    else:
+        result = subprocess.run(["xdg-open", path], capture_output=True, text=True, timeout=10)
+
+    if result.returncode == 0:
+        return f"Opened path: {path}"
+    return f"Could not open path: {result.stderr.strip()}"
 
 
 def register(mcp):
@@ -190,6 +213,19 @@ def register(mcp):
             return f"Error listing workspace: {str(e)}"
 
     @mcp.tool()
+    def open_path(path: str = "") -> str:
+        """
+        Open any file or folder using the system default app.
+        If path is empty, opens the workspace folder.
+        Use this when the user says 'open this file', 'open this folder', or
+        wants a document/site folder launched directly.
+        """
+        try:
+            return _open_path_default(path)
+        except Exception as e:
+            return f"Error opening path: {str(e)}"
+
+    @mcp.tool()
     def open_in_finder(path: str = "") -> str:
         """
         Open a file or folder in the system file manager.
@@ -197,25 +233,10 @@ def register(mcp):
         Use this when the user says 'show me the folder', 'open Desktop', 'open my workspace'.
         """
         try:
-            if not path:
-                path = _workspace_dir()
-            else:
-                path = str(resolve_user_path(path))
-
-            if not os.path.exists(path):
-                return f"Path does not exist: {path}"
-
-            if os.name == "nt":
-                os.startfile(path)
-                return f"Opened folder view: {path}"
-            elif sys.platform == "darwin":
-                result = subprocess.run(["open", path], capture_output=True, text=True, timeout=10)
-            else:
-                result = subprocess.run(["xdg-open", path], capture_output=True, text=True, timeout=10)
-
-            if result.returncode == 0:
-                return f"Opened folder view: {path}"
-            return f"Could not open path: {result.stderr.strip()}"
+            result = _open_path_default(path)
+            if result.startswith("Opened path:"):
+                return result.replace("Opened path:", "Opened folder view:", 1)
+            return result
         except Exception as e:
             return f"Error opening path: {str(e)}"
 
@@ -233,6 +254,90 @@ def register(mcp):
             return f"Appended {len(content)} characters to {resolved_path}"
         except Exception as e:
             return f"Error appending to file: {str(e)}"
+
+    @mcp.tool()
+    def copy_path(source_path: str, destination_path: str, overwrite: bool = False) -> str:
+        """
+        Copy a file or folder to another location on the machine.
+        Relative paths default to the workspace, while absolute and special roots
+        like Desktop/Documents/Downloads are also supported.
+        """
+        try:
+            source = resolve_user_path(source_path)
+            destination = resolve_user_path(destination_path)
+
+            if not source.exists():
+                return f"Source path does not exist: {source}"
+            if destination.exists() and not overwrite:
+                return f"Destination already exists: {destination}. Set overwrite=true to replace it."
+
+            if destination.exists():
+                if destination.is_dir():
+                    shutil.rmtree(destination)
+                else:
+                    destination.unlink()
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, destination)
+                return f"Copied folder to {destination}"
+
+            shutil.copy2(source, destination)
+            return f"Copied file to {destination}"
+        except Exception as e:
+            return f"Error copying path: {str(e)}"
+
+    @mcp.tool()
+    def move_path(source_path: str, destination_path: str, overwrite: bool = False) -> str:
+        """
+        Move or rename a file or folder anywhere the host user account can access.
+        Relative paths default to the workspace; absolute and special roots are supported.
+        """
+        try:
+            source = resolve_user_path(source_path)
+            destination = resolve_user_path(destination_path)
+
+            if not source.exists():
+                return f"Source path does not exist: {source}"
+            if destination.exists() and not overwrite:
+                return f"Destination already exists: {destination}. Set overwrite=true to replace it."
+
+            if destination.exists():
+                if destination.is_dir():
+                    shutil.rmtree(destination)
+                else:
+                    destination.unlink()
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(destination))
+            return f"Moved path to {destination}"
+        except Exception as e:
+            return f"Error moving path: {str(e)}"
+
+    @mcp.tool()
+    def delete_path(path: str, recursive: bool = False) -> str:
+        """
+        Delete a file or folder anywhere the host user account can access.
+        Set recursive=true when deleting a non-empty folder.
+        """
+        try:
+            target = resolve_user_path(path)
+            if not target.exists():
+                return f"Path does not exist: {target}"
+
+            if target.is_dir():
+                if any(target.iterdir()) and not recursive:
+                    return f"Folder is not empty: {target}. Set recursive=true to remove it."
+                if recursive:
+                    shutil.rmtree(target)
+                else:
+                    target.rmdir()
+                return f"Deleted folder: {target}"
+
+            target.unlink()
+            return f"Deleted file: {target}"
+        except Exception as e:
+            return f"Error deleting path: {str(e)}"
 
     @mcp.tool()
     def delete_workspace_file(filename: str) -> str:

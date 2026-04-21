@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import datetime
 import json
+import ctypes
 import os
 import platform
 import shutil
 import subprocess
+import base64
 from pathlib import Path
 from typing import Any
 
-from friday.path_utils import known_user_paths, workspace_dir
+from friday.path_utils import known_user_paths, resolve_user_path, workspace_dir
 
 OS = platform.system()  # "Darwin" | "Linux" | "Windows"
 
@@ -56,6 +58,17 @@ def _storage_root() -> str:
     return os.path.abspath(os.path.sep)
 
 
+def _is_elevated() -> bool | None:
+    try:
+        if OS == "Windows":
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        if hasattr(os, "geteuid"):
+            return os.geteuid() == 0
+    except Exception:
+        return None
+    return None
+
+
 def _short(value: Any, limit: int = 110) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -90,6 +103,28 @@ def _task_display_name(row: dict[str, Any]) -> str:
     return f"{task_path}{task_name}"
 
 
+def _windows_python_drive_rows() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for code in range(ord("A"), ord("Z") + 1):
+        device = f"{chr(code)}:\\"
+        if not os.path.exists(device):
+            continue
+        try:
+            total, _used, free = shutil.disk_usage(device)
+        except Exception:
+            continue
+        rows.append(
+            {
+                "DeviceID": device.rstrip("\\"),
+                "VolumeName": "",
+                "DriveType": "FileSystem",
+                "SizeGB": round(total / (1024 ** 3), 1),
+                "FreeGB": round(free / (1024 ** 3), 1),
+            }
+        )
+    return rows
+
+
 def _windows_disk_drives() -> list[dict[str, Any]]:
     primary_script = """
 Get-CimInstance Win32_LogicalDisk |
@@ -113,7 +148,10 @@ Get-CimInstance Win32_LogicalDisk |
     }} |
   ConvertTo-Json -Compress
 """
-    result = _powershell(primary_script, timeout=20)
+    try:
+        result = _powershell(primary_script, timeout=20)
+    except subprocess.TimeoutExpired:
+        result = subprocess.CompletedProcess(args=["powershell"], returncode=1, stdout="", stderr="Drive query timed out")
     if result.returncode == 0:
         rows = _load_json_records(result.stdout)
         if rows:
@@ -134,11 +172,22 @@ Get-PSDrive -PSProvider FileSystem |
     }} |
   ConvertTo-Json -Compress
 """
-    fallback = _powershell(fallback_script, timeout=20)
-    if fallback.returncode != 0:
-        detail = fallback.stderr.strip() or result.stderr.strip() or "Failed to enumerate Windows drives"
-        raise RuntimeError(detail)
-    return _load_json_records(fallback.stdout)
+    try:
+        fallback = _powershell(fallback_script, timeout=20)
+    except subprocess.TimeoutExpired:
+        fallback = subprocess.CompletedProcess(args=["powershell"], returncode=1, stdout="", stderr="Drive fallback query timed out")
+
+    if fallback.returncode == 0:
+        rows = _load_json_records(fallback.stdout)
+        if rows:
+            return rows
+
+    python_rows = _windows_python_drive_rows()
+    if python_rows:
+        return python_rows
+
+    detail = fallback.stderr.strip() or result.stderr.strip() or "Failed to enumerate Windows drives"
+    raise RuntimeError(detail)
 
 
 def _windows_open_windows(query: str = "", limit: int = 25) -> list[dict[str, Any]]:
@@ -497,6 +546,7 @@ def register(mcp):
         Return a summary of the current runtime environment - OS, Python, paths, user.
         """
         try:
+            elevated = _is_elevated()
             info = {
                 "os": f"{OS} {platform.release()}",
                 "os_version": platform.version(),
@@ -507,11 +557,90 @@ def register(mcp):
                 "home": str(os.path.expanduser("~")),
                 "workspace": str(workspace_dir()),
                 "shell": os.environ.get("SHELL", os.environ.get("COMSPEC", "unknown")),
+                "elevated": elevated if elevated is not None else "unknown",
             }
             lines = [f"{key}: {value}" for key, value in info.items()]
             return "=== System Environment ===\n" + "\n".join(lines)
         except Exception as e:
             return f"Error getting environment: {str(e)}"
+
+    @mcp.tool()
+    def get_host_control_status() -> str:
+        """
+        Return whether FRIDAY is running with broad desktop-control prerequisites.
+        Use this before system-wide tasks so the agent knows whether it has elevated
+        rights, where the workspace is, and whether visible browser automation is enabled.
+        """
+        try:
+            elevated = _is_elevated()
+            status = {
+                "os": OS,
+                "hostname": platform.node(),
+                "user": os.environ.get("USER", os.environ.get("USERNAME", "unknown")),
+                "workspace": str(workspace_dir()),
+                "shell": os.environ.get("SHELL", os.environ.get("COMSPEC", "unknown")),
+                "elevated": elevated if elevated is not None else "unknown",
+                "browser_headless": os.environ.get("FRIDAY_BROWSER_HEADLESS", "").strip().lower() in {"1", "true", "yes", "on"},
+                "code_cli_available": bool(shutil.which("code")),
+            }
+            notes: list[str] = []
+            if elevated is False:
+                notes.append("Administrator-only tasks may fail until FRIDAY is started from an elevated terminal.")
+            if status["browser_headless"]:
+                notes.append("Browser automation is currently headless; set FRIDAY_BROWSER_HEADLESS=0 for visible browsing.")
+            if not status["code_cli_available"]:
+                notes.append("VS Code launcher was not found on PATH.")
+            status["notes"] = notes
+            return json.dumps(status, indent=2)
+        except Exception as e:
+            return f"Error getting host control status: {str(e)}"
+
+    @mcp.tool()
+    def open_elevated_terminal(command: str = "", working_directory: str = "") -> str:
+        """
+        Open an Administrator PowerShell window on Windows, optionally preloaded with a command.
+        The user will still need to approve the Windows UAC prompt.
+        Use this when a task truly needs elevated rights and the boss wants a visible admin shell.
+        """
+        try:
+            if OS != "Windows":
+                return "Elevated terminal launching is currently implemented for Windows only."
+
+            target_dir = resolve_user_path(working_directory) if working_directory.strip() else Path.cwd().resolve()
+            script_lines = [f"Set-Location -LiteralPath {_ps_quote(str(target_dir))}"]
+            if command.strip():
+                script_lines.append(command)
+            payload = "\n".join(script_lines)
+            encoded = base64.b64encode(payload.encode("utf-16le")).decode("ascii")
+
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        "Start-Process powershell "
+                        f"-Verb RunAs -WorkingDirectory {_ps_quote(str(target_dir))} "
+                        f"-ArgumentList @('-NoExit','-EncodedCommand','{encoded}')"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip() or "Could not open elevated terminal."
+                return f"Error opening elevated terminal: {detail}"
+
+            if command.strip():
+                return (
+                    f"Opened an Administrator PowerShell at {target_dir}. "
+                    f"After UAC approval it will run: {command}"
+                )
+            return f"Opened an Administrator PowerShell at {target_dir}. Approve the UAC prompt to continue."
+        except Exception as e:
+            return f"Error opening elevated terminal: {str(e)}"
 
     @mcp.tool()
     def list_disk_drives() -> str:
@@ -631,6 +760,17 @@ def register(mcp):
                 f"User: {os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))}",
                 f"Python: {platform.python_version()}",
             ]
+            elevated = _is_elevated()
+            overview_lines.append(
+                "Privileges: "
+                + (
+                    "elevated/admin"
+                    if elevated is True
+                    else "standard user"
+                    if elevated is False
+                    else "unknown"
+                )
+            )
             if "cpu_load_pct" in telemetry:
                 overview_lines.append(f"CPU load: {telemetry['cpu_load_pct']}%")
             elif "cpu_load_1m_pct" in telemetry:

@@ -18,6 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from friday.codex_bridge import codex_relay_status, dispatch_to_vscode_codex
 from friday.local_chat import local_greeting, local_mode_issues, local_mode_ready, run_local_chat
 
 
@@ -76,6 +77,7 @@ def _local_status(request: Request | None = None) -> dict[str, Any]:
         else os.getenv("GEMINI_LLM_MODEL", "gemini-2.5-flash").strip()
     )
     issues = local_mode_issues()
+    codex_status = codex_relay_status()
 
     return {
         "server_name": os.getenv("SERVER_NAME", "Friday").strip() or "Friday",
@@ -88,6 +90,7 @@ def _local_status(request: Request | None = None) -> dict[str, Any]:
         "issues": issues,
         "ready": not issues,
         "greeting": local_greeting(),
+        "codex_relay": codex_status,
         "legacy_livekit_configured": bool(
             os.getenv("LIVEKIT_URL") and os.getenv("LIVEKIT_API_KEY") and os.getenv("LIVEKIT_API_SECRET")
         ),
@@ -96,6 +99,7 @@ def _local_status(request: Request | None = None) -> dict[str, Any]:
 
 def _render_page(request: Request) -> str:
     state = _local_status(request)
+    codex_state = state["codex_relay"]
     server_name = html.escape(state["server_name"])
     mcp_server_url = html.escape(state["mcp_server_url"])
     llm_label = html.escape(f"{state['llm_provider']} / {state['llm_model']}")
@@ -104,6 +108,13 @@ def _render_page(request: Request) -> str:
     readiness_class = "ready" if state["ready"] else "warn"
     issues = state["issues"] or ["Local browser mode is ready."]
     issue_items = "".join(f"<li>{html.escape(item)}</li>" for item in issues)
+    codex_status_label = "Ready" if codex_state["ready"] else "Needs Setup"
+    codex_status_text = (
+        "VS Code launcher and the Codex extension are available. Relay mode can open the sidebar, start a thread, and paste a project-aware prompt."
+        if codex_state["ready"]
+        else "; ".join(codex_state["issues"]) or "Codex relay is not configured yet."
+    )
+    codex_project_path = html.escape(codex_state["project_path"])
 
     return f"""<!doctype html>
 <html lang="en">
@@ -458,6 +469,46 @@ def _render_page(request: Request) -> str:
         border: 1px solid rgba(255,255,255,0.07);
       }}
 
+      .composer-meta {{
+        display: grid;
+        grid-template-columns: 180px minmax(0, 1fr);
+        gap: 12px;
+        margin-bottom: 14px;
+      }}
+
+      .field-stack {{
+        display: grid;
+        gap: 8px;
+      }}
+
+      .field-label {{
+        color: var(--muted);
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+      }}
+
+      .mode-select,
+      .path-input {{
+        width: 100%;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 14px;
+        background: rgba(255,255,255,0.04);
+        color: var(--text);
+        font: inherit;
+        padding: 12px 14px;
+      }}
+
+      .codex-banner {{
+        margin-bottom: 14px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        background: rgba(42, 209, 190, 0.08);
+        border: 1px solid rgba(42, 209, 190, 0.16);
+        color: var(--muted);
+        line-height: 1.58;
+      }}
+
       .composer textarea {{
         width: 100%;
         min-height: 112px;
@@ -540,6 +591,10 @@ def _render_page(request: Request) -> str:
         .console {{
           grid-template-columns: 1fr;
         }}
+
+        .composer-meta {{
+          grid-template-columns: 1fr;
+        }}
       }}
     </style>
   </head>
@@ -599,6 +654,22 @@ def _render_page(request: Request) -> str:
             <div class="message-log" id="message-log"></div>
 
             <div class="composer">
+              <div class="composer-meta">
+                <label class="field-stack">
+                  <span class="field-label">Dispatch Mode</span>
+                  <select class="mode-select" id="dispatch-mode">
+                    <option value="friday">FRIDAY Local Chat</option>
+                    <option value="codex">VS Code Codex Relay</option>
+                  </select>
+                </label>
+                <label class="field-stack">
+                  <span class="field-label">Project Folder</span>
+                  <input class="path-input" id="project-path-input" type="text" value="{codex_project_path}" spellcheck="false">
+                </label>
+              </div>
+              <div class="codex-banner" id="codex-banner">
+                Relay mode opens VS Code on the project folder, opens the Codex sidebar, starts a new thread, and pastes a FRIDAY-generated project brief plus your request.
+              </div>
               <textarea id="prompt-input" placeholder="Ask FRIDAY to open apps, create folders, search installed software, or run desktop tasks."></textarea>
               <div class="composer-footer">
                 <div class="composer-actions">
@@ -625,6 +696,7 @@ def _render_page(request: Request) -> str:
               <ul>
                 <li>Mic input uses the browser speech API when Edge or Chrome exposes it.</li>
                 <li>Spoken replies use the browser speech engine, so voices depend on your system.</li>
+                <li>In Codex relay mode, final speech is sent straight into the VS Code Codex chat flow.</li>
                 <li>If browser speech is unavailable, typing still works.</li>
               </ul>
             </section>
@@ -632,6 +704,12 @@ def _render_page(request: Request) -> str:
             <section class="side-card">
               <h3>Opening Websites</h3>
               <p class="mini">Browser automation uses FRIDAY's own automation browser window. It does not take over your current Edge tab unless a desktop-control tool explicitly does that.</p>
+            </section>
+
+            <section class="side-card">
+              <h3>Codex Relay</h3>
+              <p class="mini" id="codex-status-note">{html.escape(codex_status_text)}</p>
+              <p class="mini footer-note">Status: <span id="codex-status-label">{html.escape(codex_status_label)}</span></p>
             </section>
 
             <section class="side-card">
@@ -650,11 +728,14 @@ def _render_page(request: Request) -> str:
 
     <script>
       const initialGreeting = {json.dumps(state["greeting"])};
+      const initialCodexStatus = {json.dumps(codex_state)};
       const appState = {{
         ready: {str(state["ready"]).lower()},
+        codexReady: {str(codex_state["ready"]).lower()},
         busy: false,
         listening: false,
         speakReplies: true,
+        dispatchMode: "friday",
         messages: [
           {{ role: "assistant", content: initialGreeting, toolEvents: [] }}
         ],
@@ -666,6 +747,11 @@ def _render_page(request: Request) -> str:
       const micButton = document.getElementById("mic-button");
       const stopSpeechButton = document.getElementById("stop-speech");
       const speakToggle = document.getElementById("speak-toggle");
+      const dispatchMode = document.getElementById("dispatch-mode");
+      const projectPathInput = document.getElementById("project-path-input");
+      const codexBanner = document.getElementById("codex-banner");
+      const codexStatusNote = document.getElementById("codex-status-note");
+      const codexStatusLabel = document.getElementById("codex-status-label");
       const issueList = document.getElementById("issue-list");
       const readinessPill = document.getElementById("readiness-pill");
 
@@ -695,10 +781,24 @@ def _render_page(request: Request) -> str:
         messageLog.scrollTop = messageLog.scrollHeight;
       }}
 
+      function activeModeReady() {{
+        return appState.dispatchMode === "codex" ? appState.codexReady : appState.ready;
+      }}
+
       function setBusy(isBusy) {{
         appState.busy = isBusy;
-        sendButton.disabled = isBusy || !appState.ready;
-        micButton.disabled = isBusy || !appState.ready;
+        sendButton.disabled = isBusy || !activeModeReady();
+        micButton.disabled = isBusy || !activeModeReady();
+      }}
+
+      function updateComposerMode() {{
+        appState.dispatchMode = dispatchMode.value === "codex" ? "codex" : "friday";
+        const codexMode = appState.dispatchMode === "codex";
+        promptInput.placeholder = codexMode
+          ? "Describe what Codex should do in this project. FRIDAY will attach a local project brief before sending it."
+          : "Ask FRIDAY to open apps, create folders, search installed software, or run desktop tasks.";
+        codexBanner.hidden = !codexMode;
+        setBusy(appState.busy);
       }}
 
       function addMessage(role, content, toolEvents = []) {{
@@ -725,13 +825,26 @@ def _render_page(request: Request) -> str:
         try {{
           const response = await fetch("/status", {{ headers: {{ "Accept": "application/json" }} }});
           const status = await response.json();
+          const codex = status.codex_relay || initialCodexStatus;
 
           appState.ready = Boolean(status.ready);
+          appState.codexReady = Boolean(codex.ready);
           readinessPill.textContent = status.ready ? "Ready" : "Needs Config";
           readinessPill.className = `status-pill ${{status.ready ? "ready" : "warn"}}`;
           issueList.innerHTML = (status.issues.length ? status.issues : ["Local browser mode is ready."])
             .map((item) => `<li>${{escapeHtml(item)}}</li>`)
             .join("");
+          codexStatusLabel.textContent = codex.ready ? "Ready" : "Needs Setup";
+          codexStatusNote.textContent = codex.ready
+            ? "VS Code launcher and the Codex extension are available. Relay mode can open the sidebar, start a thread, and paste a project-aware prompt."
+            : (Array.isArray(codex.issues) && codex.issues.length
+              ? codex.issues.join("; ")
+              : "Codex relay is not configured yet.");
+
+          if (!projectPathInput.value.trim() || projectPathInput.value.trim() === initialCodexStatus.project_path) {{
+            projectPathInput.value = codex.project_path || initialCodexStatus.project_path;
+          }}
+
           document.getElementById("mcp-url").textContent = status.mcp_server_url;
           document.getElementById("llm-label").textContent = `${{status.llm_provider}} / ${{status.llm_model}}`;
 
@@ -762,7 +875,7 @@ def _render_page(request: Request) -> str:
 
       async function sendPrompt(text) {{
         const trimmed = text.trim();
-        if (!trimmed || appState.busy || !appState.ready) {{
+        if (!trimmed || appState.busy || !activeModeReady()) {{
           return;
         }}
 
@@ -771,17 +884,25 @@ def _render_page(request: Request) -> str:
         setBusy(true);
 
         const pendingIndex = appState.messages.length;
-        addMessage("system", "Working on it.");
+        addMessage("system", appState.dispatchMode === "codex" ? "Sending to VS Code Codex." : "Working on it.");
 
         try {{
-          const response = await fetch("/api/chat", {{
+          const endpoint = appState.dispatchMode === "codex" ? "/api/codex/relay" : "/api/chat";
+          const body = appState.dispatchMode === "codex"
+            ? {{
+                prompt: trimmed,
+                project_path: projectPathInput.value.trim(),
+              }}
+            : {{
+                messages: appState.messages
+                  .filter((message) => message.role === "user" || message.role === "assistant")
+                  .map((message) => ({{ role: message.role, content: message.content }})),
+              }};
+
+          const response = await fetch(endpoint, {{
             method: "POST",
             headers: {{ "Content-Type": "application/json" }},
-            body: JSON.stringify({{
-              messages: appState.messages
-                .filter((message) => message.role === "user" || message.role === "assistant")
-                .map((message) => ({{ role: message.role, content: message.content }})),
-            }}),
+            body: JSON.stringify(body),
           }});
 
           const data = await response.json();
@@ -790,12 +911,13 @@ def _render_page(request: Request) -> str:
           if (!response.ok) {{
             addMessage("system", data.error || "The local chat route failed.");
           }} else {{
-            addMessage("assistant", data.reply || "I did not get a usable reply back.", data.tool_events || []);
+            const reply = data.reply || "I did not get a usable reply back.";
+            addMessage("assistant", reply, data.tool_events || []);
             speakReply(data.reply || "");
           }}
         }} catch (error) {{
           appState.messages.splice(pendingIndex, 1);
-          addMessage("system", "The local route could not be reached.");
+          addMessage("system", appState.dispatchMode === "codex" ? "The Codex relay route could not be reached." : "The local route could not be reached.");
           console.error("Chat request failed", error);
         }} finally {{
           setBusy(false);
@@ -858,6 +980,7 @@ def _render_page(request: Request) -> str:
         button.addEventListener("click", () => copyText(button.dataset.copy, button));
       }});
 
+      dispatchMode.addEventListener("change", updateComposerMode);
       sendButton.addEventListener("click", () => sendPrompt(promptInput.value));
       promptInput.addEventListener("keydown", (event) => {{
         if (event.key === "Enter" && !event.shiftKey) {{
@@ -893,6 +1016,7 @@ def _render_page(request: Request) -> str:
       }});
 
       setupRecognition();
+      updateComposerMode();
       renderMessages();
       refreshStatus();
       setBusy(false);
@@ -950,6 +1074,34 @@ def register_web_routes(mcp) -> None:
                 "tool_events": result.tool_events,
             }
         )
+
+    @mcp.custom_route("/api/codex/relay", methods=["POST"], include_in_schema=False)
+    async def codex_relay_api(request: Request) -> Response:
+        if _needs_browser_redirect(request):
+            return RedirectResponse(f"{_browser_base_url(request)}/", status_code=307)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
+
+        prompt = str(payload.get("prompt", "")).strip()
+        project_path = str(payload.get("project_path", "")).strip()
+        if not prompt:
+            return JSONResponse({"error": "prompt is required."}, status_code=400)
+
+        try:
+            result = dispatch_to_vscode_codex(prompt, project_path=project_path)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:  # pragma: no cover - defensive route guard
+            logger.exception("Codex relay request failed")
+            return JSONResponse(
+                {"error": f"Codex relay failed unexpectedly: {exc}"},
+                status_code=500,
+            )
+
+        return JSONResponse(result)
 
     @mcp.custom_route("/connect", methods=["GET"], include_in_schema=False)
     async def legacy_connect_redirect(request: Request) -> Response:
