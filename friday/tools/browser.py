@@ -2,6 +2,8 @@
 Browser Automation tool — allows F.R.I.D.A.Y to operate a headless browser, navigate, click, fill forms, and read screen content.
 """
 
+import os
+
 try:
     from playwright.async_api import async_playwright
 except ImportError:
@@ -19,6 +21,11 @@ def _require_playwright() -> None:
         )
 
 
+def _browser_headless() -> bool:
+    value = os.environ.get("FRIDAY_BROWSER_HEADLESS", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 async def _get_page():
     global _playwright, _browser, _page
     _require_playwright()
@@ -27,9 +34,11 @@ async def _get_page():
             _playwright = await async_playwright().start()
         if not _browser:
             from pathlib import Path
-            import os
             downloads_dir = os.environ.get("FRIDAY_DOWNLOADS_DIR", str(Path.home() / "Downloads"))
-            _browser = await _playwright.chromium.launch(headless=False, downloads_path=downloads_dir)
+            _browser = await _playwright.chromium.launch(
+                headless=_browser_headless(),
+                downloads_path=downloads_dir,
+            )
         _page = await _browser.new_page(accept_downloads=True)
     return _page
 

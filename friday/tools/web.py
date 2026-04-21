@@ -2,6 +2,7 @@
 Web tools — search, fetch pages, and global news briefings.
 """
 
+import html
 import httpx
 import xml.etree.ElementTree as ET
 import asyncio
@@ -43,8 +44,10 @@ async def fetch_and_parse_feed(client, url):
             description = item.findtext("description")
             link = item.findtext("link")
 
+            if title:
+                title = html.unescape(title).strip()
             if description:
-                description = re.sub('<[^<]+?>', '', description).strip()
+                description = html.unescape(re.sub('<[^<]+?>', '', description)).strip()
 
             feed_items.append({
                 "source": source_name,
@@ -90,7 +93,7 @@ async def _ddg_html_search(client: httpx.AsyncClient, query: str) -> list:
         encoded = urllib.parse.quote_plus(query)
         url = f"https://html.duckduckgo.com/html/?q={encoded}"
         resp = await client.get(url, headers=HEADERS, timeout=10)
-        if resp.status_code != 200:
+        if resp.status_code >= 400:
             return []
 
         html = resp.text
@@ -104,8 +107,8 @@ async def _ddg_html_search(client: httpx.AsyncClient, query: str) -> list:
         )
 
         for url_raw, title_html, snippet_html in blocks[:8]:
-            title = re.sub('<[^>]+>', '', title_html).strip()
-            snippet = re.sub('<[^>]+>', '', snippet_html).strip()
+            title = html.unescape(re.sub('<[^>]+>', '', title_html)).strip()
+            snippet = html.unescape(re.sub('<[^>]+>', '', snippet_html)).strip()
             # DDG uses redirect URLs — extract real URL
             real_url = url_raw
             uddg_match = re.search(r'uddg=([^&]+)', url_raw)
@@ -125,16 +128,16 @@ async def _ddg_instant_answer(client: httpx.AsyncClient, query: str) -> str:
         encoded = urllib.parse.quote_plus(query)
         url = f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1&skip_disambig=1"
         resp = await client.get(url, timeout=8)
-        if resp.status_code == 200:
+        if resp.status_code < 400:
             data = resp.json()
             parts = []
             for key in ("Answer", "Definition", "Abstract", "AbstractText"):
-                val = data.get(key, "").strip()
+                val = html.unescape(data.get(key, "").strip())
                 if val:
                     parts.append(val)
             for t in data.get("RelatedTopics", [])[:3]:
                 if isinstance(t, dict) and "Text" in t:
-                    parts.append(t["Text"])
+                    parts.append(html.unescape(t["Text"]))
             if parts:
                 return " ".join(parts)[:600]
     except Exception:

@@ -136,6 +136,9 @@ poetry.toml
 # ruff
 .ruff_cache/
 
+# FRIDAY healthcheck scratch dirs
+workspace/friday-health-*/
+
 # LSP config files
 pyrightconfig.json
 

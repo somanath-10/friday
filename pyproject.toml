@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 friday = "server:main"
 friday_voice = "agent_friday:dev" # Points to the wrapper
+friday_healthcheck = "friday.healthcheck:main"
 
 [build-system]
 requires = ["hatchling"]

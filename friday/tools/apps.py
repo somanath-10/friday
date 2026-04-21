@@ -4,6 +4,7 @@ manage clipboard, send notifications, and set timers.
 Supports: macOS, Linux, and Windows.
 """
 
+import json
 import subprocess
 import os
 import threading
@@ -35,6 +36,116 @@ def _powershell(script: str, timeout: int = 10) -> subprocess.CompletedProcess:
         text=True,
         timeout=timeout,
     )
+
+
+def _load_json_records(raw: str) -> list[dict]:
+    text = raw.strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    if isinstance(parsed, dict):
+        return [parsed]
+    return []
+
+
+def _load_pyautogui():
+    import pyautogui
+
+    pyautogui.FAILSAFE = False
+    pyautogui.PAUSE = 0
+    return pyautogui
+
+
+def _normalize_hotkey_part(value: str) -> str:
+    base = value.strip().lower()
+    command_key = "win" if OS == "Windows" else "command"
+    option_key = "option" if OS == "Darwin" else "alt"
+    lookup = {
+        "control": "ctrl",
+        "ctl": "ctrl",
+        "return": "enter",
+        "escape": "esc",
+        "command": command_key,
+        "cmd": command_key,
+        "windows": "win",
+        "super": "win",
+        "meta": "win",
+        "option": option_key,
+        "pgup": "pageup",
+        "pgdn": "pagedown",
+        "page_up": "pageup",
+        "page_down": "pagedown",
+        "spacebar": "space",
+        "del": "delete",
+        "ins": "insert",
+    }
+    return lookup.get(base, base)
+
+
+def _windows_sendkeys_token(value: str) -> str:
+    normalized = _normalize_hotkey_part(value)
+    named = {
+        "enter": "{ENTER}",
+        "esc": "{ESC}",
+        "tab": "{TAB}",
+        "up": "{UP}",
+        "down": "{DOWN}",
+        "left": "{LEFT}",
+        "right": "{RIGHT}",
+        "home": "{HOME}",
+        "end": "{END}",
+        "delete": "{DELETE}",
+        "backspace": "{BACKSPACE}",
+        "pagedown": "{PGDN}",
+        "pageup": "{PGUP}",
+        "space": " ",
+        "insert": "{INSERT}",
+    }
+    if normalized in named:
+        return named[normalized]
+    if normalized.startswith("f") and normalized[1:].isdigit():
+        return "{" + normalized.upper() + "}"
+    return normalized
+
+
+def _windows_sendkeys_combo(value: str) -> str:
+    parts = [_normalize_hotkey_part(part) for part in value.split("+") if part.strip()]
+    if not parts:
+        return ""
+
+    modifier_map = {
+        "ctrl": "^",
+        "alt": "%",
+        "shift": "+",
+    }
+    modifiers = [modifier_map[part] for part in parts if part in modifier_map]
+    keys = [part for part in parts if part not in modifier_map and part != "win"]
+
+    if not keys:
+        keys = [parts[-1]]
+
+    return "".join(modifiers) + "".join(_windows_sendkeys_token(part) for part in keys)
+
+
+def _windows_paste_text(text: str, press_enter: bool) -> str:
+    ps_script = (
+        "$previous = Get-Clipboard -Raw -ErrorAction SilentlyContinue; "
+        f"Set-Clipboard -Value {_ps_quote(text)}; "
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "[System.Windows.Forms.SendKeys]::SendWait('^v'); "
+        + ("[System.Windows.Forms.SendKeys]::SendWait('{ENTER}'); " if press_enter else "")
+        + "Start-Sleep -Milliseconds 50; "
+        "if ($null -ne $previous) { Set-Clipboard -Value $previous }"
+    )
+    result = _powershell(ps_script, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Windows clipboard paste fallback failed")
+    return f"Typed {len(text)} characters" + (" and pressed Enter." if press_enter else ".")
 
 
 def _windows_search_results(query: str, limit: int = 20) -> list[str]:
@@ -599,6 +710,90 @@ def register(mcp):
             return f"Error searching for apps: {str(e)}"
 
     @mcp.tool()
+    def list_open_windows(query: str = "", limit: int = 25) -> str:
+        """
+        List visible application windows, including titles when available.
+        Use this when the user asks what windows are open, which app is focused,
+        or which browser/document window to target next.
+        """
+        try:
+            if limit <= 0:
+                return "Limit must be greater than zero."
+
+            if OS == "Windows":
+                escaped_query = _ps_quote(query)
+                ps_script = f"""
+$query = {escaped_query}
+$limit = {int(limit)}
+Get-Process |
+  Where-Object {{ $_.MainWindowTitle -and $_.MainWindowTitle.Trim() -ne '' }} |
+  Where-Object {{ (-not $query) -or $_.ProcessName -like "*$query*" -or $_.MainWindowTitle -like "*$query*" }} |
+  Sort-Object ProcessName, Id |
+  Select-Object -First $limit Id, ProcessName, MainWindowTitle |
+  ConvertTo-Json -Compress
+"""
+                result = _powershell(ps_script, timeout=15)
+                if result.returncode != 0:
+                    return f"Could not list open windows: {result.stderr.strip()}"
+
+                rows = _load_json_records(result.stdout)
+                if not rows:
+                    qualifier = f" matching '{query}'" if query.strip() else ""
+                    return f"No open windows found{qualifier}."
+
+                lines = [
+                    f"  - {row.get('ProcessName') or '?'} [{row.get('Id') or '?'}] :: {row.get('MainWindowTitle') or '(untitled)'}"
+                    for row in rows
+                ]
+                return f"Open windows ({len(lines)}):\n" + "\n".join(lines)
+
+            if OS == "Darwin":
+                script = 'tell application "System Events" to get name of every process where background only is false'
+                result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+                apps = [item.strip() for item in result.stdout.split(",") if item.strip()]
+                if query.strip():
+                    needle = query.lower()
+                    apps = [app for app in apps if needle in app.lower()]
+                if not apps:
+                    return f"No open windows found matching '{query}'." if query.strip() else "No open windows found."
+                return f"Open windows ({len(apps[:limit])}):\n" + "\n".join(f"  - {app}" for app in apps[:limit])
+
+            result = subprocess.run(["wmctrl", "-l"], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                return f"Could not list open windows: {result.stderr.strip()}"
+            windows = [line.split(None, 3)[-1] for line in result.stdout.strip().splitlines() if line.strip()]
+            if query.strip():
+                needle = query.lower()
+                windows = [window for window in windows if needle in window.lower()]
+            if not windows:
+                return f"No open windows found matching '{query}'." if query.strip() else "No open windows found."
+            return f"Open windows ({len(windows[:limit])}):\n" + "\n".join(f"  - {window}" for window in windows[:limit])
+        except Exception as e:
+            return f"Error listing open windows: {str(e)}"
+
+    @mcp.tool()
+    def type_text(text: str, press_enter: bool = False, interval_ms: int = 20) -> str:
+        """
+        Type text into the currently focused application or field.
+        Use this after opening or focusing an app when the user wants FRIDAY to
+        enter text, search queries, or commands.
+        """
+        try:
+            interval_seconds = max(0, interval_ms) / 1000.0
+            pyautogui = _load_pyautogui()
+            pyautogui.write(text, interval=interval_seconds)
+            if press_enter:
+                pyautogui.press("enter")
+            return f"Typed {len(text)} characters" + (" and pressed Enter." if press_enter else ".")
+        except Exception as primary_error:
+            if OS == "Windows":
+                try:
+                    return _windows_paste_text(text, press_enter=press_enter)
+                except Exception as fallback_error:
+                    return f"Error typing text: {fallback_error}"
+            return f"Error typing text: {primary_error}"
+
+    @mcp.tool()
     def gui_get_mouse_pos() -> str:
         """
         Get the current (x, y) coordinates of the mouse cursor.
@@ -671,19 +866,33 @@ Start-Sleep -Milliseconds 60;
         Examples: 'enter', 'esc', 'tab', 'down', 'up', 'command+tab', 'ctrl+c'.
         """
         try:
-            if OS == "Darwin":
-                # Map common names to AppleScript key codes/commands
-                lookup = {"enter": "return", "esc": "escape"}
-                k = lookup.get(key.lower(), key)
-                script = f'tell application "System Events" to key code {k}' if k.isdigit() else f'tell application "System Events" to keystroke "{k}"'
-                if "+" in key:
-                    # Handle combinations like command+tab
-                    pass 
-                subprocess.run(["osascript", "-e", script], timeout=5)
-            elif OS == "Windows":
-                ps_script = f"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{{{key.upper()}}}')"
-                subprocess.run(["powershell", "-Command", ps_script], timeout=5)
-            
+            normalized_parts = [_normalize_hotkey_part(part) for part in key.split("+") if part.strip()]
+            if not normalized_parts:
+                return "No key provided."
+
+            try:
+                pyautogui = _load_pyautogui()
+                if len(normalized_parts) == 1:
+                    pyautogui.press(normalized_parts[0])
+                else:
+                    pyautogui.hotkey(*normalized_parts)
+            except Exception:
+                if OS == "Windows":
+                    send_keys = _windows_sendkeys_combo(key)
+                    if not send_keys:
+                        return f"Unsupported key combination: {key}"
+                    fallback = _powershell(
+                        f"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait({_ps_quote(send_keys)})",
+                        timeout=5,
+                    )
+                    if fallback.returncode != 0:
+                        return f"Error pressing key: {fallback.stderr.strip()}"
+                elif OS == "Darwin":
+                    script = f'tell application "System Events" to keystroke "{_escape_applescript_string(key)}"'
+                    subprocess.run(["osascript", "-e", script], timeout=5)
+                else:
+                    raise
+
             return f"Pressed key: {key}"
         except Exception as e:
             return f"Error pressing key: {str(e)}"

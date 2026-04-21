@@ -29,6 +29,18 @@ Microphone ──► STT (Sarvam Saaras v3)
 The voice agent connects to the MCP server via SSE at `http://127.0.0.1:8000/sse` by default. Host, port, mount path, and SSE path are all configurable through `.env`.
 
 ---
+## Desktop capabilities
+
+FRIDAY can now operate much more of the local machine from the browser chat or voice agent:
+
+- launch, focus, close, and search installed applications
+- inspect open windows, installed software, startup items, services, scheduled tasks, and disk drives
+- open folders and URLs, manage files across Desktop/Documents/Downloads/Workspace, and take screenshots
+- type into the focused app, send hotkeys, use the clipboard, and run shell commands when needed
+
+FRIDAY still works within the permissions of the user account and shell you start it with. Tasks that require administrator rights still need the host process to be run elevated.
+
+---
 ## Quick start
 
 ### 1. Prerequisites
@@ -67,6 +79,26 @@ http://127.0.0.1:8000/
 ```
 
 The local page now handles text chat, browser microphone input when supported, browser speech output, and backend MCP tool calls without sending you to the LiveKit playground.
+
+To run a local verification pass before using it:
+
+```bash
+python -m friday.healthcheck
+# or, after syncing the project scripts:
+uv run friday_healthcheck
+```
+
+The healthcheck validates imports, tool registration, the local web UI startup path, and a broad set of offline-safe tools. Networked features are reported separately as config-dependent.
+
+Optional deeper checks:
+
+```bash
+python -m friday.healthcheck --desktop
+python -m friday.healthcheck --browser
+python -m friday.healthcheck --desktop --browser
+```
+
+`--desktop` runs real machine workflows like Documents folder creation, Edge discovery, app launch, and URL opening. `--browser` runs the Playwright browser tool checks.
 
 ### 5. Optional legacy LiveKit mode
 
