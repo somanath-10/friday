@@ -16,6 +16,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -129,6 +130,19 @@ def _extract_text(result: Any) -> str:
 
 def _record(results: list[CheckResult], name: str, status: str, detail: str) -> None:
     results.append(CheckResult(name=name, status=status, detail=detail))
+
+
+def _missing_dependency_detail(module_name: str) -> str:
+    return (
+        f"Missing dependency '{module_name}'. "
+        "Run `uv sync`, then use `uv run friday_healthcheck` "
+        "or `uv run python -m friday.healthcheck`."
+    )
+
+
+def _module_name_from_error_text(text: str) -> str:
+    match = re.search(r"No module named '([^']+)'", text)
+    return match.group(1) if match else ""
 
 
 async def _call_text(mcp: Any, tool_name: str, args: dict[str, Any] | None = None) -> str:
@@ -562,7 +576,16 @@ def _server_startup_check(repo_root: Path) -> CheckResult:
                 stderr = process.stderr.read().strip()
             except Exception:
                 stderr = ""
+
+        missing_module = ""
+        if isinstance(exc, ModuleNotFoundError) and exc.name:
+            missing_module = exc.name
+        if not missing_module and stderr:
+            missing_module = _module_name_from_error_text(stderr)
+
         detail = f"Startup smoke test failed: {exc}"
+        if missing_module:
+            detail += f" | {_missing_dependency_detail(missing_module)}"
         if stderr:
             detail += f" | stderr: {stderr[:240]}"
         return CheckResult("server.startup", FAIL, detail)
@@ -586,7 +609,7 @@ async def _collect_results() -> list[CheckResult]:
     except Exception:
         pass
 
-    for module_name in ("PIL", "pypdf", "playwright", "trafilatura"):
+    for module_name in ("dotenv", "PIL", "pypdf", "playwright", "trafilatura"):
         status = PASS if _has_module(module_name) else WARN
         detail = f"Module {'is' if status == PASS else 'is not'} installed: {module_name}"
         _record(results, f"dependency.{module_name.lower()}", status, detail)
@@ -622,7 +645,11 @@ async def _collect_results() -> list[CheckResult]:
 
             await _run_offline_tool_checks(server_module, repo_root, results)
         except Exception as exc:
-            _record(results, "import.core", FAIL, str(exc))
+            if isinstance(exc, ModuleNotFoundError) and exc.name:
+                detail = _missing_dependency_detail(exc.name)
+            else:
+                detail = str(exc)
+            _record(results, "import.core", FAIL, detail)
 
         results.append(_server_startup_check(repo_root))
 

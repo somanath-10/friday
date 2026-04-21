@@ -83,19 +83,21 @@ The local page now handles text chat, browser microphone input when supported, b
 To run a local verification pass before using it:
 
 ```bash
-python -m friday.healthcheck
-# or, after syncing the project scripts:
 uv run friday_healthcheck
+# or:
+uv run python -m friday.healthcheck
 ```
+
+The plain `python -m friday.healthcheck` form also works if your synced project virtualenv is already active.
 
 The healthcheck validates imports, tool registration, the local web UI startup path, and a broad set of offline-safe tools. Networked features are reported separately as config-dependent.
 
 Optional deeper checks:
 
 ```bash
-python -m friday.healthcheck --desktop
-python -m friday.healthcheck --browser
-python -m friday.healthcheck --desktop --browser
+uv run python -m friday.healthcheck --desktop
+uv run python -m friday.healthcheck --browser
+uv run python -m friday.healthcheck --desktop --browser
 ```
 
 `--desktop` runs real machine workflows like Documents folder creation, Edge discovery, app launch, and URL opening. `--browser` runs the Playwright browser tool checks.
