@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
+from friday.tools.memory import record_conversation_turn, store_action_trace
+
 
 logger = logging.getLogger("friday.local_chat")
 
@@ -94,6 +96,13 @@ def _sanitize_history(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
             continue
         normalized.append({"role": role, "content": content})
     return normalized
+
+
+def _latest_user_message(messages: list[dict[str, str]]) -> str:
+    for item in reversed(messages):
+        if item.get("role") == "user":
+            return item.get("content", "")
+    return ""
 
 
 def _normalize_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
@@ -207,6 +216,7 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
         raise RuntimeError("; ".join(local_mode_issues()))
 
     history = _sanitize_history(messages)
+    latest_user_message = _latest_user_message(history)
     openai_messages: list[dict[str, Any]] = [{"role": "system", "content": _browser_system_prompt()}]
     openai_messages.extend(history)
     tool_events: list[dict[str, Any]] = []
@@ -266,6 +276,20 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
 
                 final_reply = str(assistant_content).strip()
                 if final_reply:
+                    try:
+                        await record_conversation_turn(
+                            user_message=latest_user_message,
+                            assistant_reply=final_reply,
+                            tool_events=tool_events,
+                        )
+                        await store_action_trace(
+                            goal=latest_user_message,
+                            outcome=final_reply,
+                            tool_events=tool_events,
+                            status="completed",
+                        )
+                    except Exception:
+                        logger.exception("Failed to persist local chat trace")
                     return LocalChatResult(reply=final_reply, tool_events=tool_events)
 
                 break
@@ -274,4 +298,18 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
         "I hit a dead end before I had a clean reply. "
         "Try the request again in one smaller step."
     )
+    try:
+        await record_conversation_turn(
+            user_message=latest_user_message,
+            assistant_reply=fallback,
+            tool_events=tool_events,
+        )
+        await store_action_trace(
+            goal=latest_user_message,
+            outcome=fallback,
+            tool_events=tool_events,
+            status="incomplete",
+        )
+    except Exception:
+        logger.exception("Failed to persist fallback local chat trace")
     return LocalChatResult(reply=fallback, tool_events=tool_events)

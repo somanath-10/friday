@@ -42,6 +42,7 @@ FRIDAY can now operate much more of the local machine from the browser chat or v
 - detect Chrome profiles and open a specific Chrome account directly, which helps skip the Chrome account picker on multi-profile setups
 - inspect the live desktop with screenshots and optional vision analysis before clicking or typing, and estimate target coordinates for GUI actions
 - inspect browser pages as indexed interactive elements, then click or type by element number instead of relying only on CSS selectors
+- persist conversation turns and action traces so FRIDAY can retain a lightweight execution journal across sessions
 - relay spoken or typed requests into the VS Code Codex extension with a local project snapshot first
 
 FRIDAY still works within the permissions of the user account and shell you start it with. Tasks that require administrator rights still need the host process to be run elevated.
@@ -97,6 +98,8 @@ FRIDAY_BROWSER_HEADLESS=0
 On Windows, plain `open chrome` now prefers a detected Chrome profile instead of the Chrome account picker when multiple profiles exist. FRIDAY can also list the available Chrome profiles and open a specific one by name.
 
 For more reliable GUI work, FRIDAY now has screen-aware operator tools. It can capture the live desktop, summarize what is visible, and estimate where a requested button or field is located before using mouse or keyboard tools. If `OPENAI_API_KEY` is configured, these tools use a vision-capable OpenAI model; set `OPENAI_VISION_MODEL` if you want to override the default.
+
+FRIDAY also now keeps a lightweight memory trail for local chat runs by storing conversation turns and action traces under the configured memory directory. That makes it easier to inspect what worked and build toward more reusable workflows.
 
 ### 4a. Optional: VS Code Codex relay mode
 

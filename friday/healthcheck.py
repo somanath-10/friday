@@ -447,6 +447,33 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
         lambda output: "Reminder set" in output,
     )
     await expect_text("tool.list_reminders", "list_reminders", {}, lambda output: "Smoke test reminder" in output)
+    await expect_text(
+        "tool.record_conversation_turn",
+        "record_conversation_turn",
+        {
+            "user_message": "healthcheck user",
+            "assistant_reply": "healthcheck assistant",
+            "tool_events": [{"name": "ping", "ok": True}],
+        },
+        lambda output: "recorded" in output.lower(),
+    )
+    await expect_text(
+        "tool.store_action_trace",
+        "store_action_trace",
+        {
+            "goal": "healthcheck goal",
+            "outcome": "healthcheck outcome",
+            "tool_events": [{"name": "ping", "ok": True}],
+            "status": "completed",
+        },
+        lambda output: "stored" in output.lower(),
+    )
+    await expect_text(
+        "tool.get_recent_action_traces",
+        "get_recent_action_traces",
+        {"limit": 1},
+        lambda output: "healthcheck goal" in output,
+    )
 
     try:
         reminder_listing = await _call_text(mcp, "list_reminders", {})
