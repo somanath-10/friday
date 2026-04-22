@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from friday.path_utils import safe_filename, workspace_dir, workspace_path
+from friday.subprocess_utils import run_powershell
 
 OS = platform.system()  # "Darwin" | "Linux" | "Windows"
 
@@ -91,16 +92,11 @@ def _ps_quote(value: str) -> str:
 
 
 def _powershell(script: str, timeout: int = 10) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["powershell", "-NoProfile", "-Command", script],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    return run_powershell(script, timeout=timeout)
 
 
-def _load_json_records(raw: str) -> list[dict]:
-    text = raw.strip()
+def _load_json_records(raw: str | None) -> list[dict]:
+    text = str(raw or "").strip()
     if not text:
         return []
     try:
@@ -944,10 +940,7 @@ def register(mcp):
                 result = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
                 content = result.stdout
             elif OS == "Windows":
-                result = subprocess.run(
-                    ["powershell", "-Command", "Get-Clipboard"],
-                    capture_output=True, text=True, timeout=5
-                )
+                result = _powershell("Get-Clipboard", timeout=5)
                 content = result.stdout
             else:  # Linux
                 for cmd in [["xclip", "-o", "-selection", "clipboard"], ["xsel", "--clipboard", "--output"]]:
@@ -1092,10 +1085,12 @@ def register(mcp):
                     apps = sorted([a.strip() for a in result.stdout.strip().split(",") if a.strip()])
                     return f"Running apps ({len(apps)}):\n" + "\n".join(f"  • {a}" for a in apps)
             elif OS == "Windows":
-                result = subprocess.run(
-                    ["powershell", "-Command", "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object -ExpandProperty ProcessName"],
-                    capture_output=True, text=True, timeout=10
+                result = _powershell(
+                    "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object -ExpandProperty ProcessName",
+                    timeout=10,
                 )
+                if result.returncode != 0:
+                    return f"Could not list apps: {result.stderr.strip() or 'PowerShell process query failed.'}"
                 apps = sorted([a.strip() for a in result.stdout.strip().splitlines() if a.strip()])
                 return f"Running apps ({len(apps)}):\n" + "\n".join(f"  • {a}" for a in apps)
             else:  # Linux

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from friday.path_utils import resolve_user_path, workspace_dir
+from friday.subprocess_utils import run_powershell
 
 
 OS = platform.system()
@@ -97,12 +98,7 @@ def _ps_quote(value: str) -> str:
 
 
 def _powershell(script: str, timeout: int = 15) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["powershell", "-NoProfile", "-Command", script],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    return run_powershell(script, timeout=timeout)
 
 
 def _load_pyautogui():

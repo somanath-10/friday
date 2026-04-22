@@ -8,13 +8,15 @@ import subprocess
 import platform
 import os
 
+from friday.subprocess_utils import run_powershell
+
 OS = platform.system()
 
 def execute_shell(command: str, timeout: int = 60) -> str:
     """Execute a shell command on the host OS."""
     try:
         if OS == "Windows":
-            result = subprocess.run(["powershell", "-Command", command], capture_output=True, text=True, timeout=timeout)
+            result = run_powershell(command, timeout=timeout, no_profile=False, force_utf8=False)
         else:
             result = subprocess.run(command, shell=True, executable="/bin/bash" if os.path.exists("/bin/bash") else None, capture_output=True, text=True, timeout=timeout)
         output = ""

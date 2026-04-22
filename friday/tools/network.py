@@ -7,6 +7,8 @@ import socket
 import platform
 import os
 
+from friday.subprocess_utils import run_powershell
+
 OS = platform.system()
 
 
@@ -93,20 +95,18 @@ def register(mcp):
 
             # Try to get more detailed network info
             if OS == "Windows":
-                result = subprocess.run(
-                    ["powershell", "-Command",
-                     "Get-NetIPAddress -AddressFamily IPv4 | Select-Object IPAddress,InterfaceAlias | Format-Table -AutoSize | Out-String"],
-                    capture_output=True, text=True, timeout=10
+                result = run_powershell(
+                    "Get-NetIPAddress -AddressFamily IPv4 | Select-Object IPAddress,InterfaceAlias | Format-Table -AutoSize | Out-String",
+                    timeout=10,
                 )
                 if result.returncode == 0:
                     lines.append("\nNetwork Interfaces (IPv4):")
                     lines.append(result.stdout.strip())
                 # Default gateway
                 try:
-                    gw_result = subprocess.run(
-                        ["powershell", "-Command",
-                         "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop"],
-                        capture_output=True, text=True, timeout=10
+                    gw_result = run_powershell(
+                        "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop",
+                        timeout=10,
                     )
                     if gw_result.returncode == 0 and gw_result.stdout.strip():
                         lines.append(f"Default GW: {gw_result.stdout.strip()}")

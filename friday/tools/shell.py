@@ -6,6 +6,8 @@ import subprocess
 import platform
 import os
 
+from friday.subprocess_utils import run_powershell
+
 OS = platform.system()
 
 def register(mcp):
@@ -20,12 +22,7 @@ def register(mcp):
         try:
             if OS == "Windows":
                 # Use powershell for rich capabilities
-                result = subprocess.run(
-                    ["powershell", "-Command", command],
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
+                result = run_powershell(command, timeout=60, no_profile=False, force_utf8=False)
             else:
                 # Use bash for Linux/macOS
                 result = subprocess.run(

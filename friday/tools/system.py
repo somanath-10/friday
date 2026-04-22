@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from friday.path_utils import known_user_paths, resolve_user_path, workspace_dir
+from friday.subprocess_utils import run_powershell
 
 OS = platform.system()  # "Darwin" | "Linux" | "Windows"
 
@@ -26,16 +27,11 @@ def _ps_quote(value: str) -> str:
 
 
 def _powershell(script: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["powershell", "-NoProfile", "-Command", script],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    return run_powershell(script, timeout=timeout)
 
 
-def _load_json_records(raw: str) -> list[dict[str, Any]]:
-    text = raw.strip()
+def _load_json_records(raw: str | None) -> list[dict[str, Any]]:
+    text = str(raw or "").strip()
     if not text:
         return []
 
@@ -613,19 +609,12 @@ def register(mcp):
             payload = "\n".join(script_lines)
             encoded = base64.b64encode(payload.encode("utf-16le")).decode("ascii")
 
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-Command",
-                    (
-                        "Start-Process powershell "
-                        f"-Verb RunAs -WorkingDirectory {_ps_quote(str(target_dir))} "
-                        f"-ArgumentList @('-NoExit','-EncodedCommand','{encoded}')"
-                    ),
-                ],
-                capture_output=True,
-                text=True,
+            result = _powershell(
+                (
+                    "Start-Process powershell "
+                    f"-Verb RunAs -WorkingDirectory {_ps_quote(str(target_dir))} "
+                    f"-ArgumentList @('-NoExit','-EncodedCommand','{encoded}')"
+                ),
                 timeout=20,
             )
 

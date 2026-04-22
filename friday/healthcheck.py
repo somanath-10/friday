@@ -31,6 +31,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from friday.subprocess_utils import decode_subprocess_text, run_powershell
+
 
 PASS = "PASS"
 WARN = "WARN"
@@ -310,19 +312,12 @@ async def _run_desktop_workflow_checks(mcp: Any, results: list[CheckResult]) -> 
         _record(results, "workflow.browser_open_url", status, output[:240])
         time.sleep(3)
 
-        result = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                (
-                    "Get-Process msedge -ErrorAction SilentlyContinue | "
-                    "Where-Object { $_.MainWindowTitle -ne '' } | "
-                    "Select-Object -First 5 Id,ProcessName,MainWindowTitle | Format-Table -AutoSize | Out-String"
-                ),
-            ],
-            capture_output=True,
-            text=True,
+        result = run_powershell(
+            (
+                "Get-Process msedge -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.MainWindowTitle -ne '' } | "
+                "Select-Object -First 5 Id,ProcessName,MainWindowTitle | Format-Table -AutoSize | Out-String"
+            ),
             timeout=20,
         )
         window_text = (result.stdout or result.stderr).strip()
@@ -381,6 +376,13 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
         except Exception as exc:
             _record(results, name, FAIL, str(exc))
 
+    def _nonempty_success(output: str) -> bool:
+        stripped = output.strip()
+        if not stripped:
+            return False
+        lowered = stripped.lower()
+        return not lowered.startswith(("error ", "could not "))
+
     await expect_text("tool.get_current_time", "get_current_time", {}, lambda output: "ISO 8601:" in output)
     await expect_text("tool.get_system_telemetry", "get_system_telemetry", {}, lambda output: "os" in output.lower())
     await expect_text("tool.get_environment_info", "get_environment_info", {}, lambda output: "workspace:" in output.lower())
@@ -414,8 +416,8 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
     await expect_text("tool.copy_path", "copy_path", {"source_path": "demo.txt", "destination_path": "copies/demo_copy.txt"}, lambda output: "Copied file" in output)
     await expect_text("tool.move_path", "move_path", {"source_path": "copies/demo_copy.txt", "destination_path": "moved/demo_final.txt"}, lambda output: "Moved path" in output)
     await expect_text("tool.delete_path", "delete_path", {"path": "moved/demo_final.txt"}, lambda output: "Deleted file" in output)
-    await expect_text("tool.search_local_apps", "search_local_apps", {"query": "edge"}, lambda output: bool(output.strip()))
-    await expect_text("tool.list_chrome_profiles", "list_chrome_profiles", {}, lambda output: bool(output.strip()))
+    await expect_text("tool.search_local_apps", "search_local_apps", {"query": "edge"}, _nonempty_success)
+    await expect_text("tool.list_chrome_profiles", "list_chrome_profiles", {}, _nonempty_success)
     await expect_text("tool.inspect_desktop_screen", "inspect_desktop_screen", {"question": "What is visible right now?"}, lambda output: "Desktop screenshot:" in output or "Error inspecting desktop screen" not in output)
     await expect_text("tool.get_codex_relay_status", "get_codex_relay_status", {}, lambda output: "project_path" in output)
     await expect_text("tool.build_codex_project_brief", "build_codex_project_brief", {}, lambda output: "Project root:" in output)
@@ -430,7 +432,7 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
 
     fixture_pdf = repo_root / "workspace" / "workflow_suite_20260417_165535" / "workspace" / "sample.pdf"
     if fixture_pdf.exists():
-        await expect_text("tool.read_pdf", "read_pdf", {"file_path": str(fixture_pdf)}, lambda output: bool(output.strip()))
+        await expect_text("tool.read_pdf", "read_pdf", {"file_path": str(fixture_pdf)}, _nonempty_success)
     else:
         _record(results, "tool.read_pdf", SKIP, "Sample PDF fixture not found.")
 
@@ -498,7 +500,7 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
 
     await expect_text("tool.git_status", "git_status", {"repo_path": str(repo_root)}, lambda output: "Git Status" in output or "Working tree clean" in output)
     await expect_text("tool.git_branch", "git_branch", {"repo_path": str(repo_root)}, lambda output: "Branches:" in output)
-    await expect_text("tool.ping_host", "ping_host", {"host": "127.0.0.1", "count": 1}, lambda output: bool(output.strip()))
+    await expect_text("tool.ping_host", "ping_host", {"host": "127.0.0.1", "count": 1}, _nonempty_success)
     await expect_text("tool.dns_lookup", "dns_lookup", {"hostname": "localhost"}, lambda output: "127.0.0.1" in output or "::1" in output)
     await expect_text("tool.get_local_network_info", "get_local_network_info", {}, lambda output: "Hostname" in output)
 
@@ -559,10 +561,15 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
     else:
         _record(results, "tool.image_suite", SKIP, "Pillow is not installed.")
 
-    await expect_text("tool.get_volume", "get_volume", {}, lambda output: bool(output.strip()))
-    await expect_text("tool.get_running_apps", "get_running_apps", {}, lambda output: bool(output.strip()))
-    await expect_text("tool.list_open_windows", "list_open_windows", {"limit": 5}, lambda output: bool(output.strip()))
-    await expect_text("tool.list_installed_apps", "list_installed_apps", {"query": "notepad", "limit": 5}, lambda output: bool(output.strip()))
+    await expect_text("tool.get_volume", "get_volume", {}, _nonempty_success)
+    await expect_text("tool.get_running_apps", "get_running_apps", {}, _nonempty_success)
+    await expect_text(
+        "tool.list_open_windows",
+        "list_open_windows",
+        {"limit": 5},
+        lambda output: _nonempty_success(output) and ("Open windows (" in output or "No open windows found" in output),
+    )
+    await expect_text("tool.list_installed_apps", "list_installed_apps", {"query": "notepad", "limit": 5}, _nonempty_success)
     await _run_desktop_workflow_checks(mcp, results)
 
 
@@ -595,7 +602,7 @@ def _server_startup_check(repo_root: Path) -> CheckResult:
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=False,
     )
 
     try:
@@ -613,7 +620,7 @@ def _server_startup_check(repo_root: Path) -> CheckResult:
         stderr = ""
         if process.stderr is not None:
             try:
-                stderr = process.stderr.read().strip()
+                stderr = decode_subprocess_text(process.stderr.read()).strip()
             except Exception:
                 stderr = ""
 

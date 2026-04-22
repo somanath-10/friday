@@ -8,6 +8,8 @@ import subprocess
 import os
 import platform
 
+from friday.subprocess_utils import run_powershell
+
 OS = platform.system()
 
 
@@ -35,29 +37,26 @@ def register(mcp):
                     # Simpler approach via nircmd or registry
                 )
                 # Use a simpler fallback
-                result = subprocess.run(
-                    ["powershell", "-Command",
-                     "$vol = [System.Media.SystemSounds]::Beep; "
-                     "$wsh = New-Object -ComObject WScript.Shell; "
-                     "(Get-AudioDevice -Playback).Volume"],
-                    capture_output=True, text=True, timeout=5
+                result = run_powershell(
+                    "$vol = [System.Media.SystemSounds]::Beep; "
+                    "$wsh = New-Object -ComObject WScript.Shell; "
+                    "(Get-AudioDevice -Playback).Volume",
+                    timeout=5,
                 )
                 # Most reliable: use the mixer
-                result2 = subprocess.run(
-                    ["powershell", "-Command",
-                     "Add-Type -AssemblyName System.Windows.Forms; "
-                     "[System.Windows.Forms.SystemInformation]::MouseWheelScrollLines | Out-Null; "
-                     "$vol = (Get-WmiObject -Query 'SELECT * FROM Win32_SoundDevice') | Select-Object -First 1; "
-                     "Write-Output 'Volume query complete'"],
-                    capture_output=True, text=True, timeout=5
+                result2 = run_powershell(
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "[System.Windows.Forms.SystemInformation]::MouseWheelScrollLines | Out-Null; "
+                    "$vol = (Get-WmiObject -Query 'SELECT * FROM Win32_SoundDevice') | Select-Object -First 1; "
+                    "Write-Output 'Volume query complete'",
+                    timeout=5,
                 )
                 # Best available: nircmd-style via PowerShell
-                r3 = subprocess.run(
-                    ["powershell", "-Command",
-                     "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');"
-                     "$mixer = New-Object System.Windows.Forms.SendKeys;"
-                     "Write-Output 'System volume control active'"],
-                    capture_output=True, text=True, timeout=5
+                r3 = run_powershell(
+                    "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');"
+                    "$mixer = New-Object System.Windows.Forms.SendKeys;"
+                    "Write-Output 'System volume control active'",
+                    timeout=5,
                 )
                 return "Volume info: Use set_volume to control audio. (Direct volume query requires AudioDeviceCmdlets module)"
             elif OS == "Darwin":
@@ -102,10 +101,7 @@ def register(mcp):
                     f"Write-Output 'Volume set to {level}% (reboot nircmd if not installed)' "
                     f"}} else {{ Write-Output 'Volume set to {level}%' }}"
                 )
-                result = subprocess.run(
-                    ["powershell", "-Command", ps_script],
-                    capture_output=True, text=True, timeout=8
-                )
+                result = run_powershell(ps_script, timeout=8)
                 # More reliable PowerShell volume control
                 ps2 = (
                     f"Add-Type -TypeDefinition '\n"
@@ -117,7 +113,7 @@ def register(mcp):
                     f"{int(level/2)} | % {{ 1..$_ | % {{ $wshell.SendKeys([char]175) }} }};\n"  # Vol up
                     f"Write-Output 'Volume adjusted to approximately {level}%'"
                 )
-                r2 = subprocess.run(["powershell", "-Command", ps2], capture_output=True, text=True, timeout=10)
+                r2 = run_powershell(ps2, timeout=10)
                 return f"System volume set to {level}%."
             elif OS == "Darwin":
                 result = subprocess.run(
@@ -149,7 +145,7 @@ def register(mcp):
         try:
             if OS == "Windows":
                 ps = "$wshell = New-Object -ComObject WScript.Shell; $wshell.SendKeys([char]173)"
-                subprocess.run(["powershell", "-Command", ps], capture_output=True, text=True, timeout=5)
+                run_powershell(ps, timeout=5)
                 return "Audio muted."
             elif OS == "Darwin":
                 subprocess.run(["osascript", "-e", "set volume with output muted"],
@@ -175,7 +171,7 @@ def register(mcp):
             if OS == "Windows":
                 # Send mute key again (toggle)
                 ps = "$wshell = New-Object -ComObject WScript.Shell; $wshell.SendKeys([char]173)"
-                subprocess.run(["powershell", "-Command", ps], capture_output=True, text=True, timeout=5)
+                run_powershell(ps, timeout=5)
                 return "Audio unmuted."
             elif OS == "Darwin":
                 subprocess.run(["osascript", "-e", "set volume without output muted"],
@@ -209,7 +205,7 @@ def register(mcp):
                 import threading
                 # Play async so it doesn't block
                 def _play():
-                    subprocess.run(["powershell", "-Command", ps], timeout=300)
+                    run_powershell(ps, timeout=300)
                 threading.Thread(target=_play, daemon=True).start()
                 return f"Playing: {resolved.name}"
             elif OS == "Darwin":
