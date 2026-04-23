@@ -174,6 +174,7 @@ Copy `.env.example` → `.env` and fill in the values below.
 | `GOOGLE_API_KEY` | ✅ (default LLM) | [aistudio.google.com](https://aistudio.google.com/projects) |
 | `FRIDAY_MAX_TOOL_STEPS` | optional | Raises per-turn tool budget for more complex tasks; default is `8` |
 | `FRIDAY_LOCAL_MAX_TOOL_ROUNDS` | optional | Raises the local browser chat tool-call budget; default is `14` |
+| `FRIDAY_LOCAL_MAX_OPENAI_TOOLS` | optional | Caps how many MCP tools the local browser chat exposes at once; default is `72` for faster replies |
 | `FRIDAY_BROWSER_HEADLESS` | optional | Set to `0` for a visible automation browser, or `1` for hidden Playwright sessions |
 | `OPENAI_VISION_MODEL` | optional | Override the model used by desktop vision tools; otherwise FRIDAY reuses `OPENAI_LLM_MODEL` |
 | `FRIDAY_CODEX_PROJECT_DIR` | optional | Default folder that relay mode opens in VS Code before sending your prompt |

@@ -19,10 +19,27 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from friday.codex_bridge import codex_relay_status, dispatch_to_vscode_codex
-from friday.local_chat import local_greeting, local_mode_issues, local_mode_ready, run_local_chat
+from friday.local_chat import (
+    local_greeting,
+    local_mode_issues,
+    local_mode_ready,
+    run_local_chat,
+    transcribe_browser_audio,
+)
 
 
 logger = logging.getLogger("friday.web_ui")
+
+
+def _nested_runtime_error(exc: BaseException) -> str | None:
+    if isinstance(exc, RuntimeError):
+        return str(exc)
+    if isinstance(exc, BaseExceptionGroup):
+        for child in exc.exceptions:
+            detail = _nested_runtime_error(child)
+            if detail:
+                return detail
+    return None
 
 
 def _canonical_browser_host(host: str | None) -> str:
@@ -85,7 +102,7 @@ def _local_status(request: Request | None = None) -> dict[str, Any]:
         "mcp_server_url": _mcp_server_url(request),
         "llm_provider": llm_provider,
         "llm_model": llm_model,
-        "browser_voice_input": "SpeechRecognition / webkitSpeechRecognition when available",
+        "browser_voice_input": "MediaRecorder microphone capture with backend transcription",
         "browser_voice_output": "speechSynthesis",
         "issues": issues,
         "ready": not issues,
@@ -287,6 +304,12 @@ def _render_page(request: Request) -> str:
         color: #081018;
       }}
 
+      .button-mic.starting {{
+        background: rgba(255, 200, 87, 0.16);
+        border-color: rgba(255, 200, 87, 0.5);
+        color: var(--warn);
+      }}
+
       .grid {{
         display: grid;
         grid-template-columns: repeat(12, 1fr);
@@ -462,6 +485,12 @@ def _render_page(request: Request) -> str:
         font-size: 0.78rem;
       }}
 
+      .tool-chip.error {{
+        color: #251d08;
+        background: rgba(255, 200, 87, 0.18);
+        border-color: rgba(255, 200, 87, 0.36);
+      }}
+
       .composer {{
         padding: 16px;
         border-radius: 22px;
@@ -529,6 +558,20 @@ def _render_page(request: Request) -> str:
         gap: 12px;
         padding-top: 12px;
         border-top: 1px solid rgba(255,255,255,0.07);
+      }}
+
+      .voice-status {{
+        margin: 10px 2px 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }}
+
+      .voice-status.ok {{
+        color: var(--ok);
+      }}
+
+      .voice-status.warn {{
+        color: var(--warn);
       }}
 
       .composer-actions {{
@@ -682,6 +725,7 @@ def _render_page(request: Request) -> str:
                   Speak replies aloud
                 </label>
               </div>
+              <p class="voice-status" id="voice-status">Voice idle. Click Start Mic or type your request.</p>
             </div>
           </div>
 
@@ -694,7 +738,7 @@ def _render_page(request: Request) -> str:
             <section class="side-card">
               <h3>Voice Notes</h3>
               <ul>
-                <li>Mic input uses the browser speech API when Edge or Chrome exposes it.</li>
+                <li>Mic input streams short browser-recorded chunks to the local backend for live transcription updates.</li>
                 <li>Spoken replies use the browser speech engine, so voices depend on your system.</li>
                 <li>In Codex relay mode, final speech is sent straight into the VS Code Codex chat flow.</li>
                 <li>If browser speech is unavailable, typing still works.</li>
@@ -734,6 +778,7 @@ def _render_page(request: Request) -> str:
         codexReady: {str(codex_state["ready"]).lower()},
         busy: false,
         listening: false,
+        micStarting: false,
         speakReplies: true,
         dispatchMode: "friday",
         messages: [
@@ -749,26 +794,58 @@ def _render_page(request: Request) -> str:
       const speakToggle = document.getElementById("speak-toggle");
       const dispatchMode = document.getElementById("dispatch-mode");
       const projectPathInput = document.getElementById("project-path-input");
+      const voiceStatus = document.getElementById("voice-status");
       const codexBanner = document.getElementById("codex-banner");
       const codexStatusNote = document.getElementById("codex-status-note");
       const codexStatusLabel = document.getElementById("codex-status-label");
       const issueList = document.getElementById("issue-list");
       const readinessPill = document.getElementById("readiness-pill");
 
-      let recognition = null;
+      let mediaRecorder = null;
+      let mediaStream = null;
+      let recordedChunks = [];
+      let recordingTimer = null;
+      let silenceMonitor = null;
+      let audioContext = null;
+      let analyserNode = null;
+      let sourceNode = null;
+      let micMimeType = "";
+      let speechDetected = false;
+      let recordingStartedAt = 0;
+      let lastSoundAt = 0;
+      let previewTranscriptRequestInFlight = false;
+      let previewTranscriptQueued = false;
+      let livePreviewTranscript = "";
+      let livePreviewRequestAt = 0;
+      let liveSessionId = 0;
+      const MAX_RECORDING_MS = 20000;
+      const MIN_RECORDING_MS = 900;
+      const SILENCE_STOP_MS = 1800;
+      const SILENCE_LEVEL_THRESHOLD = 0.015;
+      const RECORDER_AUDIO_BITS_PER_SECOND = 128000;
+      const LIVE_CHUNK_MS = 900;
+      const LIVE_TRANSCRIBE_INTERVAL_MS = 2200;
+      const MIN_LIVE_TRANSCRIBE_BYTES = 12000;
 
       function escapeHtml(value) {{
         return value
           .replaceAll("&", "&amp;")
           .replaceAll("<", "&lt;")
-          .replaceAll(">", "&gt;");
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
       }}
 
       function renderMessages() {{
         messageLog.innerHTML = appState.messages.map((message) => {{
           const label = message.role === "user" ? "Boss" : (message.role === "assistant" ? "Friday" : "System");
           const toolEvents = Array.isArray(message.toolEvents) && message.toolEvents.length
-            ? `<div class="tool-strip">${{message.toolEvents.map((tool) => `<span class="tool-chip">${{escapeHtml(tool.name)}}${{tool.ok ? "" : " error"}}</span>`).join("")}}</div>`
+            ? `<div class="tool-strip">${{message.toolEvents.map((tool) => {{
+                const chipClass = tool.ok ? "tool-chip" : "tool-chip error";
+                const chipLabel = tool.ok ? escapeHtml(tool.name) : `${{escapeHtml(tool.name)}} failed`;
+                const chipTitle = tool.preview ? ` title="${{escapeHtml(tool.preview)}}"` : "";
+                return `<span class="${{chipClass}}"${{chipTitle}}>${{chipLabel}}</span>`;
+              }}).join("")}}</div>`
             : "";
           return `
             <article class="message ${{message.role}}">
@@ -785,10 +862,15 @@ def _render_page(request: Request) -> str:
         return appState.dispatchMode === "codex" ? appState.codexReady : appState.ready;
       }}
 
+      function setVoiceStatus(message, tone = "info") {{
+        voiceStatus.textContent = message;
+        voiceStatus.className = tone === "info" ? "voice-status" : `voice-status ${{tone}}`;
+      }}
+
       function setBusy(isBusy) {{
         appState.busy = isBusy;
         sendButton.disabled = isBusy || !activeModeReady();
-        micButton.disabled = isBusy || !activeModeReady();
+        updateMicButton();
       }}
 
       function updateComposerMode() {{
@@ -811,6 +893,9 @@ def _render_page(request: Request) -> str:
 
       function speakReply(text) {{
         if (!appState.speakReplies || !("speechSynthesis" in window)) {{
+          if (appState.speakReplies && !("speechSynthesis" in window)) {{
+            setVoiceStatus("Reply ready. This browser cannot play spoken replies, so the text response is shown above.", "warn");
+          }}
           return;
         }}
 
@@ -818,6 +903,18 @@ def _render_page(request: Request) -> str:
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 1;
         utterance.pitch = 1;
+        utterance.onstart = () => {{
+          setVoiceStatus("Speaking reply.", "ok");
+        }};
+        utterance.onend = () => {{
+          if (!appState.listening && !appState.micStarting) {{
+            setVoiceStatus("Voice idle. Click Start Mic or type your request.");
+          }}
+        }};
+        utterance.onerror = () => {{
+          setVoiceStatus("The browser could not play the spoken reply. The text response is still shown above.", "warn");
+        }};
+        window.speechSynthesis.resume();
         window.speechSynthesis.speak(utterance);
       }}
 
@@ -925,53 +1022,443 @@ def _render_page(request: Request) -> str:
       }}
 
       function updateMicButton() {{
-        if (!recognition) {{
+        if (!supportsRecordedMic()) {{
           micButton.textContent = "Mic Unavailable";
           micButton.disabled = true;
+          micButton.classList.remove("starting");
+          micButton.classList.remove("listening");
           return;
         }}
 
-        micButton.textContent = appState.listening ? "Listening..." : "Start Mic";
+        micButton.textContent = appState.micStarting
+          ? "Starting..."
+          : (appState.listening ? "Listening..." : "Start Mic");
+        micButton.disabled = appState.busy || !activeModeReady() || appState.micStarting;
+        micButton.classList.toggle("starting", appState.micStarting);
         micButton.classList.toggle("listening", appState.listening);
       }}
 
-      function setupRecognition() {{
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {{
+      function secureMicContext() {{
+        return window.isSecureContext || ["localhost", "127.0.0.1", "::1", "[::1]"].includes(window.location.hostname);
+      }}
+
+      function supportsRecordedMic() {{
+        return secureMicContext()
+          && Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+          && "MediaRecorder" in window;
+      }}
+
+      function pickRecorderMimeType() {{
+        if (!("MediaRecorder" in window) || typeof MediaRecorder.isTypeSupported !== "function") {{
+          return "";
+        }}
+
+        const candidates = [
+          "audio/webm;codecs=opus",
+          "audio/webm",
+          "audio/mp4",
+          "audio/ogg;codecs=opus",
+        ];
+
+        return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+      }}
+
+      function clearRecordingTimer() {{
+        if (recordingTimer) {{
+          window.clearTimeout(recordingTimer);
+          recordingTimer = null;
+        }}
+      }}
+
+      function clearSilenceMonitor() {{
+        if (silenceMonitor) {{
+          window.clearTimeout(silenceMonitor);
+          silenceMonitor = null;
+        }}
+      }}
+
+      function closeAudioMonitor() {{
+        clearSilenceMonitor();
+
+        if (sourceNode) {{
+          try {{
+            sourceNode.disconnect();
+          }} catch (error) {{
+            console.debug("Audio source cleanup failed", error);
+          }}
+          sourceNode = null;
+        }}
+
+        if (analyserNode) {{
+          try {{
+            analyserNode.disconnect();
+          }} catch (error) {{
+            console.debug("Audio analyser cleanup failed", error);
+          }}
+          analyserNode = null;
+        }}
+
+        if (audioContext) {{
+          const context = audioContext;
+          audioContext = null;
+          Promise.resolve(context.close()).catch((error) => {{
+            console.debug("Audio context cleanup failed", error);
+          }});
+        }}
+
+        speechDetected = false;
+        recordingStartedAt = 0;
+        lastSoundAt = 0;
+        previewTranscriptQueued = false;
+      }}
+
+      function releaseMicStream() {{
+        if (mediaStream) {{
+          mediaStream.getTracks().forEach((track) => track.stop());
+          mediaStream = null;
+        }}
+      }}
+
+      function currentInputLevel() {{
+        if (!analyserNode) {{
+          return 0;
+        }}
+
+        const samples = new Uint8Array(analyserNode.fftSize);
+        analyserNode.getByteTimeDomainData(samples);
+
+        let sumSquares = 0;
+        for (let index = 0; index < samples.length; index += 1) {{
+          const normalized = (samples[index] - 128) / 128;
+          sumSquares += normalized * normalized;
+        }}
+
+        return Math.sqrt(sumSquares / samples.length);
+      }}
+
+      function monitorForSilence() {{
+        if (!mediaRecorder || mediaRecorder.state !== "recording") {{
+          clearSilenceMonitor();
+          return;
+        }}
+
+        const now = Date.now();
+        const inputLevel = currentInputLevel();
+
+        if (inputLevel >= SILENCE_LEVEL_THRESHOLD) {{
+          speechDetected = true;
+          lastSoundAt = now;
+        }} else if (
+          speechDetected
+          && now - lastSoundAt >= SILENCE_STOP_MS
+          && now - recordingStartedAt >= MIN_RECORDING_MS
+        ) {{
+          stopRecording(true, "Speech ended. Transcribing now...");
+          return;
+        }}
+
+        silenceMonitor = window.setTimeout(monitorForSilence, 150);
+      }}
+
+      async function startAudioMonitor(stream) {{
+        closeAudioMonitor();
+
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        recordingStartedAt = Date.now();
+        lastSoundAt = recordingStartedAt;
+        speechDetected = false;
+
+        if (!AudioContextCtor) {{
+          return;
+        }}
+
+        audioContext = new AudioContextCtor();
+        sourceNode = audioContext.createMediaStreamSource(stream);
+        analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 2048;
+        sourceNode.connect(analyserNode);
+
+        if (audioContext.state === "suspended") {{
+          await audioContext.resume();
+        }}
+
+        monitorForSilence();
+      }}
+
+      async function requestMicrophoneStream() {{
+        if (!secureMicContext()) {{
+          throw new Error("Microphone input needs a secure browser page. Open FRIDAY from localhost or 127.0.0.1.");
+        }}
+
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+          throw new Error("This browser does not support microphone recording for FRIDAY. Try Microsoft Edge or Google Chrome.");
+        }}
+
+        return navigator.mediaDevices.getUserMedia({{
+          audio: {{
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }},
+        }});
+      }}
+
+      function recordingFileName() {{
+        if (micMimeType.includes("ogg")) {{
+          return "friday-mic.ogg";
+        }}
+        if (micMimeType.includes("mp4")) {{
+          return "friday-mic.m4a";
+        }}
+        return "friday-mic.webm";
+      }}
+
+      function currentRecordingBlob() {{
+        return recordedChunks.length
+          ? new Blob(recordedChunks, {{ type: micMimeType || recordedChunks[0].type || "audio/webm" }})
+          : null;
+      }}
+
+      async function transcribeBlob(blob) {{
+        const formData = new FormData();
+        formData.append("audio", blob, recordingFileName());
+
+        const response = await fetch("/api/transcribe", {{
+          method: "POST",
+          body: formData,
+        }});
+        const data = await response.json();
+
+        if (!response.ok) {{
+          throw new Error(data.error || "The transcription route failed.");
+        }}
+
+        return String(data.text || "").trim();
+      }}
+
+      function queueLiveTranscript(force = false) {{
+        if (!appState.listening) {{
+          return;
+        }}
+
+        if (previewTranscriptRequestInFlight) {{
+          previewTranscriptQueued = true;
+          return;
+        }}
+
+        void updateLiveTranscript(force, liveSessionId);
+      }}
+
+      async function updateLiveTranscript(force = false, sessionId = liveSessionId) {{
+        if (!appState.listening || sessionId !== liveSessionId) {{
+          return;
+        }}
+
+        const blob = currentRecordingBlob();
+        if (!blob || blob.size < MIN_LIVE_TRANSCRIBE_BYTES) {{
+          return;
+        }}
+
+        const now = Date.now();
+        if (!force && now - livePreviewRequestAt < LIVE_TRANSCRIBE_INTERVAL_MS) {{
+          return;
+        }}
+
+        previewTranscriptRequestInFlight = true;
+        previewTranscriptQueued = false;
+        livePreviewRequestAt = now;
+
+        try {{
+          const transcript = await transcribeBlob(blob);
+          if (!transcript || sessionId !== liveSessionId || !appState.listening) {{
+            return;
+          }}
+
+          livePreviewTranscript = transcript;
+          promptInput.value = transcript;
+          setVoiceStatus("Listening live. Keep speaking...", "ok");
+        }} catch (error) {{
+          console.debug("Live transcription update failed", error);
+        }} finally {{
+          if (sessionId === liveSessionId) {{
+            previewTranscriptRequestInFlight = false;
+            if (previewTranscriptQueued && appState.listening) {{
+              void updateLiveTranscript(true, sessionId);
+            }}
+          }}
+        }}
+      }}
+
+      async function transcribeRecording(blob) {{
+        if (!blob || !blob.size) {{
+          setVoiceStatus("I did not capture any audio. Try again and speak closer to the mic.", "warn");
+          return;
+        }}
+
+        setBusy(true);
+        setVoiceStatus("Transcribing your recording...", "ok");
+
+        try {{
+          const transcript = await transcribeBlob(blob);
+          if (!transcript) {{
+            setVoiceStatus("I captured audio, but the transcription came back empty. Try again and speak a little louder.", "warn");
+            return;
+          }}
+
+          promptInput.value = transcript;
+          setVoiceStatus("Voice captured. Sending it now.", "ok");
+          setBusy(false);
+          await sendPrompt(transcript);
+          return;
+        }} catch (error) {{
+          console.error("Audio transcription failed", error);
+          if (livePreviewTranscript.trim()) {{
+            const transcript = livePreviewTranscript.trim();
+            promptInput.value = transcript;
+            setVoiceStatus("Final transcription failed, so I am using the live transcript I already captured.", "warn");
+            setBusy(false);
+            await sendPrompt(transcript);
+            return;
+          }}
+          setVoiceStatus("The local transcription route could not be reached. Try again or type your request instead.", "warn");
+        }} finally {{
+          if (appState.busy) {{
+            setBusy(false);
+          }}
+        }}
+      }}
+
+      function stopRecording(autoStopped = false, statusMessage = "") {{
+        clearRecordingTimer();
+        clearSilenceMonitor();
+        if (!mediaRecorder || mediaRecorder.state === "inactive") {{
+          appState.listening = false;
+          appState.micStarting = false;
           updateMicButton();
           return;
         }}
 
-        recognition = new SpeechRecognition();
-        recognition.lang = "en-US";
-        recognition.interimResults = true;
-        recognition.continuous = false;
+        setVoiceStatus(
+          statusMessage || (autoStopped
+            ? "Recording limit reached. Transcribing now..."
+            : "Processing your recording..."),
+          "ok"
+        );
+        mediaRecorder.stop();
+      }}
 
-        recognition.onresult = (event) => {{
-          let transcript = "";
-          for (let index = event.resultIndex; index < event.results.length; index += 1) {{
-            transcript += event.results[index][0].transcript;
-          }}
-          promptInput.value = transcript.trim();
+      async function startRecording() {{
+        promptInput.value = "";
+        appState.micStarting = true;
+        liveSessionId += 1;
+        livePreviewTranscript = "";
+        livePreviewRequestAt = 0;
+        previewTranscriptRequestInFlight = false;
+        previewTranscriptQueued = false;
+        setVoiceStatus("Starting microphone...");
+        updateMicButton();
 
-          const lastResult = event.results[event.results.length - 1];
-          if (lastResult && lastResult.isFinal) {{
-            const finalText = promptInput.value.trim();
-            if (finalText) {{
-              sendPrompt(finalText);
+        try {{
+          mediaStream = await requestMicrophoneStream();
+          await startAudioMonitor(mediaStream);
+          recordedChunks = [];
+          micMimeType = pickRecorderMimeType();
+          const recorderOptions = micMimeType
+            ? {{ mimeType: micMimeType, audioBitsPerSecond: RECORDER_AUDIO_BITS_PER_SECOND }}
+            : {{ audioBitsPerSecond: RECORDER_AUDIO_BITS_PER_SECOND }};
+          mediaRecorder = new MediaRecorder(mediaStream, recorderOptions);
+
+          mediaRecorder.ondataavailable = (event) => {{
+            if (event.data && event.data.size > 0) {{
+              recordedChunks.push(event.data);
+              if (appState.listening && Date.now() - recordingStartedAt >= MIN_RECORDING_MS) {{
+                queueLiveTranscript();
+              }}
             }}
-          }}
-        }};
+          }};
 
-        recognition.onend = () => {{
-          appState.listening = false;
-          updateMicButton();
-        }};
+          mediaRecorder.onstart = () => {{
+            appState.micStarting = false;
+            appState.listening = true;
+            setVoiceStatus("Listening live. Speak now and I will keep up with you.", "ok");
+            updateMicButton();
+            clearRecordingTimer();
+            recordingTimer = window.setTimeout(() => {{
+              stopRecording(true, "Recording limit reached. Transcribing now...");
+            }}, MAX_RECORDING_MS);
+          }};
 
-        recognition.onerror = () => {{
+          mediaRecorder.onerror = (event) => {{
+            appState.micStarting = false;
+            appState.listening = false;
+            clearRecordingTimer();
+            closeAudioMonitor();
+            releaseMicStream();
+            mediaRecorder = null;
+            const detail = event.error && event.error.message
+              ? event.error.message
+              : "The browser could not record from your microphone.";
+            setVoiceStatus(detail, "warn");
+            updateMicButton();
+          }};
+
+          mediaRecorder.onstop = async () => {{
+            const blob = recordedChunks.length
+              ? new Blob(recordedChunks, {{ type: micMimeType || recordedChunks[0].type || "audio/webm" }})
+              : null;
+            recordedChunks = [];
+            clearRecordingTimer();
+            closeAudioMonitor();
+            releaseMicStream();
+            mediaRecorder = null;
+            appState.listening = false;
+            appState.micStarting = false;
+            updateMicButton();
+
+            if (!blob || !blob.size) {{
+              setVoiceStatus("I did not capture any audio. Try again and speak closer to the mic.", "warn");
+              return;
+            }}
+
+            await transcribeRecording(blob);
+          }};
+
+          mediaRecorder.start(LIVE_CHUNK_MS);
+        }} catch (error) {{
+          appState.micStarting = false;
           appState.listening = false;
+          clearRecordingTimer();
+          closeAudioMonitor();
+          releaseMicStream();
+          mediaRecorder = null;
+          const detail = error instanceof Error && error.message
+            ? error.message
+            : "The browser could not access your microphone.";
+          setVoiceStatus(detail, "warn");
           updateMicButton();
-        }};
+        }}
+      }}
+
+      function setupMicrophone() {{
+        if (!secureMicContext()) {{
+          setVoiceStatus("Mic input needs a secure browser page. Open FRIDAY from localhost or 127.0.0.1.", "warn");
+          updateMicButton();
+          return;
+        }}
+
+        if (!supportsRecordedMic()) {{
+          setVoiceStatus("Mic input needs browser recording support. Try Microsoft Edge or Google Chrome, or type your request here.", "warn");
+          updateMicButton();
+          return;
+        }}
+
+        micMimeType = pickRecorderMimeType();
+        if (!("speechSynthesis" in window)) {{
+          setVoiceStatus("Mic input is ready, but this browser cannot speak replies aloud. Text replies still work.", "warn");
+        }} else {{
+          setVoiceStatus("Voice idle. Click Start Mic and speak. FRIDAY will stream the words as you talk, then send when you stop.");
+        }}
 
         updateMicButton();
       }}
@@ -989,33 +1476,38 @@ def _render_page(request: Request) -> str:
         }}
       }});
 
-      micButton.addEventListener("click", () => {{
-        if (!recognition || appState.busy) {{
+      micButton.addEventListener("click", async () => {{
+        if (!supportsRecordedMic() || appState.busy || appState.micStarting) {{
           return;
         }}
 
         if (appState.listening) {{
-          recognition.stop();
-          appState.listening = false;
+          stopRecording();
         }} else {{
-          promptInput.value = "";
-          appState.listening = true;
-          recognition.start();
+          await startRecording();
         }}
         updateMicButton();
       }});
 
       speakToggle.addEventListener("change", () => {{
         appState.speakReplies = speakToggle.checked;
+        if (!appState.speakReplies) {{
+          setVoiceStatus("Reply speech is muted. Text replies will still appear in the log.");
+        }} else if (!("speechSynthesis" in window)) {{
+          setVoiceStatus("Reply speech was enabled, but this browser cannot play spoken replies.", "warn");
+        }} else if (!appState.listening && !appState.micStarting) {{
+          setVoiceStatus("Voice idle. Click Start Mic or type your request.");
+        }}
       }});
 
       stopSpeechButton.addEventListener("click", () => {{
         if ("speechSynthesis" in window) {{
           window.speechSynthesis.cancel();
+          setVoiceStatus("Stopped spoken reply.");
         }}
       }});
 
-      setupRecognition();
+      setupMicrophone();
       updateComposerMode();
       renderMessages();
       refreshStatus();
@@ -1062,6 +1554,9 @@ def register_web_routes(mcp) -> None:
         except RuntimeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except Exception as exc:  # pragma: no cover - defensive route guard
+            runtime_detail = _nested_runtime_error(exc)
+            if runtime_detail:
+                return JSONResponse({"error": runtime_detail}, status_code=400)
             logger.exception("Local chat request failed")
             return JSONResponse(
                 {"error": f"Local chat failed unexpectedly: {exc}"},
@@ -1074,6 +1569,45 @@ def register_web_routes(mcp) -> None:
                 "tool_events": result.tool_events,
             }
         )
+
+    @mcp.custom_route("/api/transcribe", methods=["POST"], include_in_schema=False)
+    async def local_transcribe_api(request: Request) -> Response:
+        if _needs_browser_redirect(request):
+            return RedirectResponse(f"{_browser_base_url(request)}/", status_code=307)
+
+        try:
+            form = await request.form()
+        except Exception:
+            return JSONResponse({"error": "Invalid audio upload."}, status_code=400)
+
+        audio = form.get("audio")
+        if audio is None:
+            return JSONResponse({"error": "audio file is required."}, status_code=400)
+
+        filename = getattr(audio, "filename", None) or "friday-mic.webm"
+        content_type = getattr(audio, "content_type", None) or "audio/webm"
+
+        try:
+            audio_bytes = await audio.read()
+        except Exception:
+            return JSONResponse({"error": "Could not read the uploaded audio."}, status_code=400)
+
+        try:
+            transcript = await transcribe_browser_audio(
+                audio_bytes,
+                filename=filename,
+                content_type=content_type,
+            )
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:  # pragma: no cover - defensive route guard
+            logger.exception("Local transcription failed")
+            return JSONResponse(
+                {"error": f"Local transcription failed unexpectedly: {exc}"},
+                status_code=500,
+            )
+
+        return JSONResponse({"text": transcript})
 
     @mcp.custom_route("/api/codex/relay", methods=["POST"], include_in_schema=False)
     async def codex_relay_api(request: Request) -> Response:
