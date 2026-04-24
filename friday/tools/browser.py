@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from html import unescape
+from html import escape, unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin
@@ -122,6 +122,55 @@ def _interactive_elements_script() -> str:
   }
   return items;
 }"""
+
+
+def _grid_dashboard_html(title: str, urls: list[str]) -> str:
+    safe_title = escape(title)
+
+    if len(urls) <= 2:
+        grid_css = "grid-template-columns: 1fr 1fr;"
+    elif len(urls) <= 4:
+        grid_css = "grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;"
+    else:
+        grid_css = "grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr;"
+
+    frame_markup: list[str] = []
+    for url in urls:
+        safe_url = escape(url, quote=True)
+        frame_markup.append(
+            '<div class="frame-container">'
+            f'<div class="frame-title">{safe_url}</div>'
+            f'<iframe src="{safe_url}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>'
+            "</div>"
+        )
+
+    iframes_html = "".join(frame_markup)
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>{safe_title}</title>
+    <style>
+        body, html {{ margin: 0; padding: 0; height: 100%; font-family: system-ui, sans-serif; background: #081018; color: #fff; overflow: hidden; }}
+        .header {{ padding: 12px 20px; background: rgba(12, 28, 42, 0.96); border-bottom: 1px solid rgba(151, 186, 214, 0.16); display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }}
+        .header h1 {{ margin: 0; font-size: 1.2rem; background: linear-gradient(135deg, #2ad1be, #ff7b47); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+        .pulse {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2ad1be; margin-right: 10px; animation: pulse 1.5s infinite; }}
+        @keyframes pulse {{ 0% {{ box-shadow: 0 0 0 0 rgba(42, 209, 190, 0.6); }} 70% {{ box-shadow: 0 0 0 10px rgba(42, 209, 190, 0); }} 100% {{ box-shadow: 0 0 0 0 rgba(42, 209, 190, 0); }} }}
+        .grid {{ display: grid; {grid_css} gap: 2px; height: calc(100vh - 50px); background: #000; }}
+        .frame-container {{ display: flex; flex-direction: column; background: #111; position: relative; }}
+        .frame-title {{ font-size: 0.75rem; padding: 4px 8px; background: #1a2530; color: #96abc1; border-bottom: 1px solid #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        iframe {{ border: none; width: 100%; flex-grow: 1; background: #fff; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1><span class="pulse"></span>Deep Research: {safe_title}</h1>
+        <div style="font-size: 0.8rem; color: #96abc1;">Analyzing {len(urls)} sources simultaneously...</div>
+    </div>
+    <div class="grid">
+        {iframes_html}
+    </div>
+</body>
+</html>"""
 
 
 class _HTMLSnapshotParser(HTMLParser):
@@ -384,10 +433,9 @@ async def _get_page():
     global _playwright, _browser, _page
     if _browser_backend == "http":
         raise RuntimeError("Playwright browser session is unavailable while HTTP fallback is active.")
-
-    _require_playwright()
     if not _page:
         try:
+            _require_playwright()
             if not _playwright:
                 _playwright = await async_playwright().start()
             if not _browser:
@@ -397,6 +445,16 @@ async def _get_page():
                     downloads_path=downloads_dir,
                 )
             _page = await _browser.new_page(accept_downloads=True)
+
+            async def strip_frame_headers(route):
+                try:
+                    response = await route.fetch()
+                    headers = {k: v for k, v in response.headers.items() if k.lower() not in ["x-frame-options", "content-security-policy"]}
+                    await route.fulfill(response=response, headers=headers)
+                except Exception:
+                    await route.continue_()
+
+            await _page.route("**/*", strip_frame_headers)
         except Exception as exc:
             if _should_use_http_fallback(exc):
                 _activate_http_fallback(exc)
@@ -583,6 +641,28 @@ def register(mcp):
                 except Exception as inner:
                     return f"Error navigating browser: {inner}"
             return f"Error navigating browser: {e}"
+
+    @mcp.tool()
+    async def browser_open_grid(title: str, urls: list[str]) -> str:
+        """
+        Visually display a grid of 3-5 concurrent website tabs on screen using an HTML dashboard.
+        This provides a "Deep Research" view allowing the user to see all sites at once.
+        """
+        try:
+            if _browser_backend == "http":
+                return "HTTP fallback does not support visual grid layout. Use browser_navigate instead."
+
+            if not urls:
+                return "No URLs provided for grid."
+
+            page = await _get_page()
+            html_content = _grid_dashboard_html(title, urls)
+            await page.set_content(html_content, wait_until="domcontentloaded")
+            return f"Opened browser grid layout with {len(urls)} concurrent visual tabs."
+        except Exception as e:
+            if _browser_backend == "http":
+                return "HTTP fallback does not support visual grid layout. Use browser_navigate instead."
+            return f"Error opening browser grid: {e}"
 
     @mcp.tool()
     async def browser_get_state(limit: int = 30) -> str:

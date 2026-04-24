@@ -16,7 +16,7 @@ def register(mcp):
     @mcp.tool()
     def delegate_to_subagent(objective: str, task_type: str = "auto") -> str:
         """
-        Dispatch any large, complex, or long-running task to the Mark IV autonomous background worker.
+        Dispatch any large, complex, or long-running task to the Mark V autonomous background worker.
 
         USE THIS WHENEVER:
         - The user asks to build a full app, tool, script, or project.
@@ -24,6 +24,8 @@ def register(mcp):
         - The user gives a complex multi-part instruction.
         - Doing it inline would freeze the voice pipeline.
         - Research tasks that require searching + writing long reports.
+
+        The Mark V subagent uses an Agent-Computer Interface (ACI) to iteratively use <shell>, <python>, <read_file>, and <write_file> to complete tasks autonomously.
 
         task_type: Hint to the subagent about what kind of task this is.
           - 'coding'   → Write, execute, and debug Python code iteratively.
@@ -51,18 +53,18 @@ def register(mcp):
             )
 
             return (
-                f"Mark IV Subagent dispatched! (ID: {task_id}, Type: {task_type})\n"
+                f"Mark V Subagent dispatched! (ID: {task_id}, Type: {task_type})\n"
                 f"Working directory: {task_workspace}\n"
                 f"Progress log: {task_workspace}/subagent_log.md\n"
-                f"The worker will auto-correct its own errors and iterate until done."
+                f"The worker will use its raw ACI shell loops to auto-correct its own errors and iterate until done."
             )
         except Exception as e:
-            return f"Failed to delegate to Mark IV subagent: {str(e)}"
+            return f"Failed to delegate to Mark V subagent: {str(e)}"
 
     @mcp.tool()
     def check_subagent_progress(workspace_path: str) -> str:
         """
-        Check the current progress of a Mark IV subagent by reading its log file.
+        Check the current progress of a Mark V subagent by reading its log file.
         workspace_path: The working directory path returned by delegate_to_subagent.
         Use this when the user asks 'how's my task going?', 'is it done yet?', 'any progress?'.
         """

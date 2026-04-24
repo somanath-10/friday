@@ -27,6 +27,7 @@ from friday.tools import (
     calendar_tool,  # Calendar events (.ics) and reminders
     firecrawl_tool, # SOTA web scraping/research
     codex_tool,  # VS Code Codex relay and project snapshot helpers
+    research,    # Custom deep research with visual grid integration
 )
 
 
@@ -55,4 +56,5 @@ def register_all_tools(mcp):
     calendar_tool.register(mcp)
     firecrawl_tool.register(mcp)
     codex_tool.register(mcp)
+    research.register(mcp)
 
