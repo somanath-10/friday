@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from friday.subprocess_utils import decode_subprocess_text, run_powershell
+from friday.subprocess_utils import decode_subprocess_text
 
 
 PASS = "PASS"
@@ -312,16 +312,8 @@ async def _run_desktop_workflow_checks(mcp: Any, results: list[CheckResult]) -> 
         _record(results, "workflow.browser_open_url", status, output[:240])
         time.sleep(3)
 
-        result = run_powershell(
-            (
-                "Get-Process msedge -ErrorAction SilentlyContinue | "
-                "Where-Object { $_.MainWindowTitle -ne '' } | "
-                "Select-Object -First 5 Id,ProcessName,MainWindowTitle | Format-Table -AutoSize | Out-String"
-            ),
-            timeout=20,
-        )
-        window_text = (result.stdout or result.stderr).strip()
-        status = PASS if "search" in window_text.lower() or "edge" in window_text.lower() else FAIL
+        window_text = await _call_text(mcp, "list_open_windows", {"limit": 10})
+        status = PASS if "search" in window_text.lower() or "edge" in window_text.lower() or "bing" in window_text.lower() else FAIL
         _record(results, "workflow.edge_window", status, window_text[:240] or "No Edge windowed process found.")
     except Exception as exc:
         _record(results, "workflow.edge_window", FAIL, str(exc))
@@ -674,7 +666,10 @@ async def _collect_results() -> list[CheckResult]:
             _record(results, "import.agent_friday", PASS, "Imported voice agent module successfully.")
             _record(results, "import.sdk", PASS, "Imported friday.sdk successfully.")
 
-            sdk_output = sdk_module.execute_shell("Write-Output 'sdk-ok'")
+            # Use cross-platform command for SDK shell test
+            import platform
+            test_command = "echo 'sdk-ok'" if platform.system() != "Windows" else "Write-Output 'sdk-ok'"
+            sdk_output = sdk_module.execute_shell(test_command)
             sdk_status = PASS if "sdk-ok" in sdk_output else FAIL
             _record(results, "sdk.execute_shell", sdk_status, sdk_output.strip()[:240])
 
@@ -728,6 +723,12 @@ def _print_human(results: list[CheckResult]) -> None:
         f"{counts.get(WARN, 0)} warnings, "
         f"{counts.get(FAIL, 0)} failed, "
         f"{counts.get(SKIP, 0)} skipped"
+    )
+
+    from friday.logger import logger
+    logger.info(
+        f"Healthcheck Summary: {counts.get(PASS, 0)} passed, {counts.get(WARN, 0)} warnings, "
+        f"{counts.get(FAIL, 0)} failed, {counts.get(SKIP, 0)} skipped"
     )
 
 

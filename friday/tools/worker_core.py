@@ -366,7 +366,7 @@ def main():
 
             if is_complete:
                 with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(f"-- Task Completed --\n")
+                    f.write("-- Task Completed --\n")
 
                 # Write final output
                 output_path = os.path.join(workspace_dir, "output.md")

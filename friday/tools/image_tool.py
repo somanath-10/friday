@@ -3,20 +3,16 @@ Image tools — generate, resize, convert, and inspect images.
 Image generation: Pollinations.ai (free, no API key).
 Image processing: Pillow (PIL) — installed into .venv if needed.
 """
-import os
+import importlib.util
+
 import httpx
 import time
-from pathlib import Path
 
 from friday.path_utils import workspace_dir, resolve_user_path
 
 
 def _pillow_available() -> bool:
-    try:
-        import PIL
-        return True
-    except ImportError:
-        return False
+    return importlib.util.find_spec("PIL") is not None
 
 
 def register(mcp):

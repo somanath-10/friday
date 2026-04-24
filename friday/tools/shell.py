@@ -33,19 +33,19 @@ def register(mcp):
                     text=True,
                     timeout=60
                 )
-            
+
             output = ""
             if result.stdout:
                 output += "STDOUT:\n" + result.stdout.strip() + "\n"
             if result.stderr:
                 output += "STDERR:\n" + result.stderr.strip() + "\n"
-                
+
             if not output.strip():
                 output = f"Command executed successfully (exit code {result.returncode}) but returned no output."
-                
+
             if len(output) > 4000:
                 output = output[:4000] + "\n... [TRUNCATED]"
-                
+
             return output
         except subprocess.TimeoutExpired:
             return "Command execution timed out after 60 seconds."

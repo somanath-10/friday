@@ -5,7 +5,7 @@ Memory tools — persistent storage for user preferences, context, and conversat
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
 
 from friday.path_utils import memory_dir
 from friday.tools.llm_utils import call_llm
@@ -64,11 +64,11 @@ async def synthesize_knowledge(task_description: str, outcome: str) -> str:
         "Output MUST be a JSON object: {\"nugget\": \"...\", \"keywords\": [...], \"confidence\": 0.0-1.0}"
     )
     prompt = f"Task: {task_description}\nOutcome: {outcome}"
-    
+
     try:
         nugget_json = await call_llm(prompt, system_prompt, json_mode=True)
         nugget_data = json.loads(nugget_json)
-        
+
         store = mgr._read(mgr.episodic_file)
         store["data"].append({
             "nugget": nugget_data["nugget"],
@@ -90,13 +90,13 @@ async def query_agentic_memory(query: str) -> str:
     core = mgr._read(mgr.core_identity_file)["data"]
     episodic = mgr._read(mgr.episodic_file)["data"]
     semantic = mgr._read(mgr.semantic_file)["data"]
-    
+
     context_dump = json.dumps({
         "core": core[-10:],
         "episodic": episodic[-15:],
         "semantic": semantic[-20:]
     })
-    
+
     system_prompt = (
         "You are F.R.I.D.A.Y.'s Neural Recall Engine. "
         "Analyze the provided memory dump and answer the user query based ONLY on relevant stored context. "

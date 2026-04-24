@@ -4,7 +4,6 @@ Creates standard .ics calendar files (importable to Google Calendar, Outlook, Ap
 Reminders are persisted in the memory directory.
 """
 import json
-import os
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path

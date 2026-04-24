@@ -22,7 +22,6 @@ from friday.codex_bridge import codex_relay_status, dispatch_to_vscode_codex
 from friday.local_chat import (
     local_greeting,
     local_mode_issues,
-    local_mode_ready,
     run_local_chat,
     transcribe_browser_audio,
 )

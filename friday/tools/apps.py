@@ -1084,6 +1084,9 @@ def register(mcp):
                 if result.returncode == 0:
                     apps = sorted([a.strip() for a in result.stdout.strip().split(",") if a.strip()])
                     return f"Running apps ({len(apps)}):\n" + "\n".join(f"  • {a}" for a in apps)
+                elif "Not allowed to send Apple events" in result.stderr:
+                    return "[Permission Denied] macOS Accessibility permission is missing. Tell the user to run 'run_permission_diagnostics' for instructions on how to fix this."
+                return f"Could not list apps: {result.stderr.strip()}"
             elif OS == "Windows":
                 result = _powershell(
                     "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object -ExpandProperty ProcessName",
@@ -1231,6 +1234,10 @@ Get-Process |
             if OS == "Darwin":
                 script = 'tell application "System Events" to get name of every process where background only is false'
                 result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    if "Not allowed to send Apple events" in result.stderr:
+                        return "[Permission Denied] macOS Accessibility permission is missing. Tell the user to run 'run_permission_diagnostics' for instructions on how to fix this."
+                    return f"Could not list open windows: {result.stderr.strip()}"
                 apps = [item.strip() for item in result.stdout.split(",") if item.strip()]
                 if query.strip():
                     needle = query.lower()
@@ -1306,7 +1313,7 @@ Get-Process |
         """
         try:
             if OS == "Darwin":
-                # AppleScript for clicking is complex, use python-based approach in subagent if possible, 
+                # AppleScript for clicking is complex, use python-based approach in subagent if possible,
                 # or native 'cliclick' if installed. Falling back to native instructions.
                 script = f'tell application "System Events" to click at {{{x}, {y}}}'
                 subprocess.run(["osascript", "-e", script], timeout=5)
@@ -1335,7 +1342,7 @@ Start-Sleep -Milliseconds 60;
 [MouseTools]::mouse_event({up_flag}, 0, 0, 0, [UIntPtr]::Zero);
 """
                 _powershell(ps_script, timeout=5)
-            
+
             return f"Synthesized {button} click at ({x}, {y})."
         except Exception as e:
             return f"Error performing GUI click: {str(e)}"
@@ -1381,7 +1388,7 @@ Start-Sleep -Milliseconds 60;
     @mcp.tool()
     async def voice_filler(filler_type: str = "thinking") -> str:
         """
-        Trigger a preemptive, short audio filler ('Thinking...', 'Looking that up...', etc.) 
+        Trigger a preemptive, short audio filler ('Thinking...', 'Looking that up...', etc.)
         to fill silence during long reasoning tasks. Part of F.R.I.D.A.Y's SOTA UX.
         """
         fillers = {

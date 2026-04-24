@@ -11,7 +11,7 @@ import httpx
 from . import browser
 
 def register(mcp):
-    
+
     async def _fetch_and_parse(client: httpx.AsyncClient, url: str) -> str:
         try:
             response = await client.get(url, follow_redirects=True, timeout=20.0)
@@ -31,10 +31,10 @@ def register(mcp):
     @mcp.tool()
     async def deep_research_grid(topic: str, urls: list[str]) -> str:
         """
-        Start a Deep Research session. 
-        It visually opens a 3-5 window grid on screen containing the chosen URLs, 
+        Start a Deep Research session.
+        It visually opens a 3-5 window grid on screen containing the chosen URLs,
         and simultaneously reads/scrapes all of them in the background, returning their text.
-        
+
         Use this when the user asks for "deep research" or to summarize multiple websites at once.
         Provide a short topic label, and a list of 3-5 specific URLs you identified as useful.
         """
