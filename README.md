@@ -218,6 +218,7 @@ TTS_PROVIDER = "sarvam"     # "sarvam" | "openai"
 | **Input Validation** | `@validate_inputs(max_str_len)` in `error_handling.py` blocks oversized payloads before they reach the LLM. |
 | **Permissions Diagnostics** | `run_permission_diagnostics` tool tests Screen Recording and Accessibility on macOS and returns exact fix commands. |
 | **Context Manager** | 5 new tools (`get_context_stats`, `trim_context`, `get_session_summary`, `save_session_note`, `clear_session_context`) for managing conversation history. |
+| **Workflow Orchestrator** | Goal-level tools create preflighted plans, track progress, verify results, and preserve recovery context. |
 | **Testing Suite** | `pytest` + `pytest-mock` with unit and mock tests. Install with `uv sync --group dev`, then run `uv run pytest tests/`. |
 
 ---

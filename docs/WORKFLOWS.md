@@ -93,3 +93,19 @@ Ask F.R.I.D.A.Y. to wrap up an old session and start clean.
 - **Save important results** using `create_document` or `save_session_note` so nothing is lost between sessions.
 - **Use `inspect_desktop_screen`** before and after GUI operations to self-verify the action succeeded.
 - **Check context size** with `get_context_stats` if responses start feeling slow — trim with `trim_context`.
+
+---
+
+## Workflow 6: Smooth Goal Execution
+
+Ask F.R.I.D.A.Y. to manage a complex task with checkpoints.
+
+**Voice/Chat Prompt:**
+> "Plan, execute, and verify the changes needed to improve the test workflow."
+
+**Tools chained internally:**
+1. `analyze_workflow(goal)` — detect browser, file, shell, git, API, and desktop needs
+2. `run_workflow_preflight(goal)` — surface missing keys, permissions, dependencies, or confirmation needs
+3. `create_workflow_plan(goal, mode="safe")` — save a durable workflow plan under `workspace/workflows`
+4. `record_workflow_progress(step_id, status, result)` — update each checkpoint as tools run
+5. `complete_workflow(outcome, verified=True)` — close the loop with final result and verification state

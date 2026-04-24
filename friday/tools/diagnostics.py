@@ -66,7 +66,7 @@ def register(mcp):
         """
         system = platform.system()
         report = [f"## F.R.I.D.A.Y. Permission Diagnostics ({system})", ""]
-        
+
         if system == "Darwin":
             # macOS checks
             sr_check = _check_macos_screen_recording()
@@ -75,13 +75,13 @@ def register(mcp):
             if "fix" in sr_check:
                 report.append("\n**How to Fix:**\n```bash\n" + sr_check["fix"].replace("    ", "") + "\n```")
             report.append("")
-            
+
             acc_check = _check_macos_accessibility()
             report.append(f"### 🖱️ Accessibility: {acc_check['status']}")
             report.append(acc_check["message"])
             if "fix" in acc_check:
                 report.append("\n**How to Fix:**\n```bash\n" + acc_check["fix"].replace("    ", "") + "\n```")
-                
+
         elif system == "Windows":
             win_check = _check_windows_permissions()
             report.append(f"### Windows Diagnostics: {win_check['status']}")
@@ -89,5 +89,5 @@ def register(mcp):
         else:
             report.append("### Linux Diagnostics")
             report.append("Linux permissions depend heavily on the display server (X11 vs Wayland). Ensure tools like `scrot` or `gnome-screenshot` are installed.")
-            
+
         return "\n".join(report)

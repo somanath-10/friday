@@ -82,13 +82,15 @@ class ContextManager:
     def build_inline_summary(self, max_turns: int = 30) -> str:
         """Build a plain-text summary of recent turns for injecting into a prompt."""
         turns = self._read_history()[-max_turns:]
-        if not turns:
-            return "No conversation history."
         lines = ["=== Recent Session Context ==="]
         prior_summary = self._read_summary()
         if prior_summary:
             lines.append(f"[Prior summary] {prior_summary}")
             lines.append("")
+        if not turns:
+            if prior_summary:
+                return "\n".join(lines).rstrip()
+            return "No conversation history."
         for t in turns:
             ts = t.get("timestamp", "")[:16]
             lines.append(f"[{ts}] User: {t.get('user_message', '')[:200]}")

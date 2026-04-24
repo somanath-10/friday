@@ -81,6 +81,14 @@ def test_build_inline_summary_includes_prior_note(ctx):
     assert "Prior session note: deployed Friday." in summary
 
 
+def test_build_inline_summary_includes_prior_note_without_turns(ctx):
+    ctx._write_summary("Prior session note: verified workflows.")
+
+    summary = ctx.build_inline_summary()
+    assert "Prior session note: verified workflows." in summary
+    assert "No conversation history" not in summary
+
+
 def test_clear_all_removes_history_and_summary(ctx):
     turns = [_make_turn() for _ in range(5)]
     ctx._write_history(turns)

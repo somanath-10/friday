@@ -111,6 +111,19 @@ All tools are automatically discovered from `friday/tools/`. To add a new tool, 
 
 ---
 
+## Workflow Orchestrator (`workflow_orchestrator.py`)
+
+| Tool | Description |
+|------|-------------|
+| `analyze_workflow(goal)` | Detect likely capability needs and suggested tool families |
+| `run_workflow_preflight(goal, live_checks)` | Check likely blockers before starting a workflow |
+| `create_workflow_plan(goal, mode, live_checks)` | Persist a goal-level plan with preflight, verification, and recovery steps |
+| `record_workflow_progress(workflow_id, step_id, status, result, next_action)` | Update a workflow step and append an event |
+| `get_workflow_status(workflow_id)` | Show the latest or specified workflow state |
+| `complete_workflow(workflow_id, outcome, verified)` | Mark a workflow complete with final outcome and verification status |
+
+---
+
 ## 🏥 Diagnostics (`diagnostics.py`) *(New in Phase 3)*
 
 | Tool | Description |

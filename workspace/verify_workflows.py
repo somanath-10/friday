@@ -1,20 +1,19 @@
 """
-Workflow Verification Script — tests all 5 documented workflows end-to-end.
+Workflow Verification Script — tests all documented workflows end-to-end.
 Run with: uv run python workspace/verify_workflows.py
 """
 
 import asyncio
-import importlib
-import json
 import os
 import sys
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 # ── Bootstrap: point at our venv and load .env ──────────────────────────────
 repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root))
 
-from dotenv import load_dotenv
 load_dotenv(repo_root / ".env")
 
 # ── Colours ─────────────────────────────────────────────────────────────────
@@ -185,14 +184,16 @@ async def workflow_3():
     except Exception as e:
         fail("list_open_windows", str(e))
 
-    # inspect_desktop_screen — WARN expected (no screen recording)
+    # inspect_desktop_screen
     try:
         result = await mcp.call_tool("inspect_desktop_screen", {"question": "What is visible?"})
         text = result[0].text if hasattr(result[0], "text") else str(result)
-        if "Screen recording permission" in text or "Desktop screenshot" in text:
+        if "Desktop screenshot" in text:
+            ok("inspect_desktop_screen", "Screenshot and vision path confirmed")
+        elif "Screen recording permission" in text:
             warn("inspect_desktop_screen", "Permission missing — graceful error confirmed ✓")
         else:
-            ok("inspect_desktop_screen", text[:60])
+            warn("inspect_desktop_screen", text[:80])
     except Exception as e:
         fail("inspect_desktop_screen", str(e))
 
@@ -323,6 +324,88 @@ async def workflow_5():
         fail("get_context_stats [after clear]", str(e))
 
 
+# ── Workflow 6: Smooth Goal Execution ────────────────────────────────────────
+async def workflow_6():
+    section("Workflow 6: Smooth Goal Execution")
+    from server import mcp
+
+    goal = "Plan, execute, and verify the changes needed to improve the test workflow."
+
+    try:
+        result = await mcp.call_tool("analyze_workflow", {"goal": goal})
+        text = result[0].text if hasattr(result[0], "text") else str(result)
+        if "capabilities" in text and "suggested_tools" in text:
+            ok("analyze_workflow", "Capabilities and suggested tools returned")
+        else:
+            fail("analyze_workflow", text[:80])
+    except Exception as e:
+        fail("analyze_workflow", str(e))
+
+    try:
+        result = await mcp.call_tool("run_workflow_preflight", {"goal": goal, "live_checks": False})
+        text = result[0].text if hasattr(result[0], "text") else str(result)
+        if "Workflow Preflight" in text and "Status:" in text:
+            ok("run_workflow_preflight", text.splitlines()[2] if len(text.splitlines()) > 2 else text[:60])
+        else:
+            fail("run_workflow_preflight", text[:80])
+    except Exception as e:
+        fail("run_workflow_preflight", str(e))
+
+    try:
+        result = await mcp.call_tool("create_workflow_plan", {
+            "goal": goal,
+            "mode": "safe",
+            "live_checks": False,
+        })
+        text = result[0].text if hasattr(result[0], "text") else str(result)
+        if "Workflow Plan" in text and "ID:" in text and "verify" in text.lower():
+            ok("create_workflow_plan", "Plan created with verification steps")
+        else:
+            fail("create_workflow_plan", text[:100])
+    except Exception as e:
+        fail("create_workflow_plan", str(e))
+
+    try:
+        result = await mcp.call_tool("record_workflow_progress", {
+            "workflow_id": "latest",
+            "step_id": "execute",
+            "status": "passed",
+            "result": "Workflow verification execution passed",
+            "next_action": "Complete final verification",
+        })
+        text = result[0].text if hasattr(result[0], "text") else str(result)
+        if "execute -> passed" in text:
+            ok("record_workflow_progress", "Execution checkpoint updated")
+        else:
+            fail("record_workflow_progress", text[:100])
+    except Exception as e:
+        fail("record_workflow_progress", str(e))
+
+    try:
+        result = await mcp.call_tool("get_workflow_status", {"workflow_id": "latest"})
+        text = result[0].text if hasattr(result[0], "text") else str(result)
+        if "Workflow Plan" in text and "execute" in text:
+            ok("get_workflow_status", "Latest workflow status readable")
+        else:
+            fail("get_workflow_status", text[:100])
+    except Exception as e:
+        fail("get_workflow_status", str(e))
+
+    try:
+        result = await mcp.call_tool("complete_workflow", {
+            "workflow_id": "latest",
+            "outcome": "Workflow 6 verified successfully",
+            "verified": True,
+        })
+        text = result[0].text if hasattr(result[0], "text") else str(result)
+        if "marked completed" in text:
+            ok("complete_workflow", text.splitlines()[0])
+        else:
+            fail("complete_workflow", text[:100])
+    except Exception as e:
+        fail("complete_workflow", str(e))
+
+
 # ── Main Runner ───────────────────────────────────────────────────────────────
 async def main():
     print(f"\n{BOLD}{'═'*55}{RESET}")
@@ -330,7 +413,8 @@ async def main():
     print(f"{BOLD}{'═'*55}{RESET}")
 
     # Use an isolated workspace so we don't pollute the main workspace
-    import uuid, shutil
+    import uuid
+    import shutil
     test_workspace = repo_root / "workspace" / f"wf-verify-{uuid.uuid4().hex[:8]}"
     test_memory   = repo_root / "workspace" / f"wf-memory-{uuid.uuid4().hex[:8]}"
     test_workspace.mkdir(parents=True, exist_ok=True)
@@ -347,6 +431,7 @@ async def main():
         await workflow_3()
         await workflow_4()
         await workflow_5()
+        await workflow_6()
     finally:
         shutil.rmtree(test_workspace, ignore_errors=True)
         shutil.rmtree(test_memory,    ignore_errors=True)
@@ -357,7 +442,7 @@ async def main():
     failed = sum(1 for r in results if r[0] == "FAIL")
 
     print(f"\n{BOLD}{'═'*55}")
-    print(f"  Workflow Verification Summary")
+    print("  Workflow Verification Summary")
     print(f"  {GREEN}{passed} passed{RESET}  {YELLOW}{warned} warnings{RESET}  {RED}{failed} failed{RESET}")
     print(f"{'═'*55}{RESET}\n")
 

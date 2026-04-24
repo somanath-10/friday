@@ -468,6 +468,35 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
         {"limit": 1},
         lambda output: "healthcheck goal" in output,
     )
+    await expect_text(
+        "tool.create_workflow_plan",
+        "create_workflow_plan",
+        {"goal": "Run tests and report the result", "mode": "safe"},
+        lambda output: "Workflow Plan" in output and "ID:" in output,
+    )
+    await expect_text(
+        "tool.record_workflow_progress",
+        "record_workflow_progress",
+        {
+            "workflow_id": "latest",
+            "step_id": "execute",
+            "status": "passed",
+            "result": "healthcheck execution passed",
+        },
+        lambda output: "execute -> passed" in output,
+    )
+    await expect_text(
+        "tool.complete_workflow",
+        "complete_workflow",
+        {"workflow_id": "latest", "outcome": "healthcheck workflow completed", "verified": True},
+        lambda output: "marked completed" in output,
+    )
+    await expect_text(
+        "tool.get_workflow_status",
+        "get_workflow_status",
+        {"workflow_id": "latest"},
+        lambda output: "Status: completed" in output,
+    )
 
     try:
         reminder_listing = await _call_text(mcp, "list_reminders", {})
