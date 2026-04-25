@@ -61,6 +61,7 @@ CORE_OPENAI_TOOLS = {
     "list_open_windows",
     "locate_screen_target",
     "open_application",
+    "open_url",
     "open_elevated_terminal",
     "open_in_finder",
     "open_path",
@@ -69,6 +70,7 @@ CORE_OPENAI_TOOLS = {
     "press_key",
     "read_file_snippet",
     "run_shell_command",
+    "search_paths_by_name",
     "search_local_apps",
     "search_web",
     "type_text",
@@ -182,6 +184,10 @@ def _browser_system_prompt() -> str:
         "You are speaking through FRIDAY's local browser page. "
         "Keep responses concise because the browser may read them aloud. "
         "Use tools whenever an action touches the computer or filesystem. "
+        "When the boss asks for a folder, project, repo, or file by name and no exact path is given, use search_paths_by_name before saying it was not found. "
+        "Do not assume a project is only on Desktop. Search common user roots like Desktop, Documents, Downloads, workspace, and home first. "
+        "When the boss asks to open a public website, search page, or online video in the real browser, prefer open_url with a direct destination URL. "
+        "For YouTube requests, open either the exact video URL or a YouTube search-results URL that matches the request, then confirm it opened. "
         "Never claim success unless a tool result confirms it. "
         "If a terminal command, browser step, or desktop action fails, keep working until you either recover with follow-up tools or hit a real blocker. "
         "If you use open_terminal_and_type, remember that it only confirms the command was typed, not that it succeeded, so verify important outcomes with shell-output or screen-inspection tools. "
@@ -215,6 +221,46 @@ def _latest_user_message(messages: list[dict[str, str]]) -> str:
         if item.get("role") == "user":
             return item.get("content", "")
     return ""
+
+
+def _real_browser_opening_hint(latest_user_message: str) -> str | None:
+    lowered = latest_user_message.strip().lower()
+    if not lowered:
+        return None
+
+    action_markers = (
+        "open ",
+        "go to ",
+        "take me to ",
+        "show me ",
+        "watch ",
+        "play ",
+    )
+    target_markers = (
+        "youtube",
+        "video",
+        "website",
+        "site",
+        "browser",
+        "url",
+        "link",
+        "google",
+        "gmail",
+        "drive",
+        "maps",
+        "web",
+    )
+    if not any(marker in lowered for marker in action_markers):
+        return None
+    if not any(marker in lowered for marker in target_markers):
+        return None
+
+    return (
+        "The latest request sounds like it should open something in the user's visible web browser. "
+        "Prefer open_url for that. "
+        "If the request is for YouTube or another site search, construct the destination URL directly and open it, "
+        "then confirm the browser-opening tool succeeded."
+    )
 
 
 def _tool_name(tool: Any) -> str:
@@ -369,8 +415,41 @@ def _tool_output_indicates_failure(text: str) -> bool:
     return any(marker in lowered for marker in TOOL_FAILURE_MARKERS)
 
 
+def _iter_result_texts(value: Any) -> list[str]:
+    texts: list[str] = []
+
+    if value is None:
+        return texts
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            texts.append(stripped)
+        return texts
+    if isinstance(value, dict):
+        for item in value.values():
+            texts.extend(_iter_result_texts(item))
+        return texts
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            texts.extend(_iter_result_texts(item))
+        return texts
+
+    text = getattr(value, "text", None)
+    if isinstance(text, str) and text.strip():
+        texts.append(text.strip())
+    return texts
+
+
 def _tool_call_failed(result: Any, rendered_result: str) -> bool:
-    return bool(getattr(result, "isError", False) or _tool_output_indicates_failure(rendered_result))
+    if getattr(result, "isError", False):
+        return True
+
+    if _tool_output_indicates_failure(rendered_result):
+        return True
+
+    candidates = _iter_result_texts(getattr(result, "structuredContent", None))
+    candidates.extend(_iter_result_texts(getattr(result, "content", None)))
+    return any(_tool_output_indicates_failure(text) for text in candidates)
 
 
 def _tool_failure_recovery_message(tool_name: str, rendered_result: str) -> str:
@@ -599,6 +678,9 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
     latest_user_message = _latest_user_message(history)
     openai_messages: list[dict[str, Any]] = [{"role": "system", "content": _browser_system_prompt()}]
     openai_messages.extend(history)
+    browser_opening_hint = _real_browser_opening_hint(latest_user_message)
+    if browser_opening_hint:
+        openai_messages.append({"role": "system", "content": browser_opening_hint})
     tool_events: list[dict[str, Any]] = []
 
     async with sse_client(mcp_url) as streams:

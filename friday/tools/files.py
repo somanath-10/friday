@@ -23,6 +23,59 @@ def _workspace_dir() -> str:
     return str(workspace_dir())
 
 
+def _normalize_search_name(name: str) -> str:
+    return name.strip().lower()
+
+
+def _depth_from_root(root: str, current: str) -> int:
+    root_depth = root.rstrip(os.sep).count(os.sep)
+    current_depth = current.rstrip(os.sep).count(os.sep)
+    return max(0, current_depth - root_depth)
+
+
+def _iter_search_roots(roots: str) -> list[Path]:
+    requested = [part.strip() for part in roots.split(",") if part.strip()]
+    if not requested:
+        requested = ["desktop", "documents", "downloads", "workspace", "home"]
+
+    known = known_user_paths()
+    resolved: list[Path] = []
+    seen: set[str] = set()
+    for item in requested:
+        candidate = known.get(item.lower())
+        if candidate is None:
+            candidate = resolve_user_path(item)
+
+        try:
+            resolved_path = candidate.resolve()
+        except Exception:
+            continue
+
+        cache_key = str(resolved_path).lower()
+        if cache_key in seen or not resolved_path.exists():
+            continue
+
+        seen.add(cache_key)
+        resolved.append(resolved_path)
+    return resolved
+
+
+def _should_skip_search_dir(name: str) -> bool:
+    lowered = name.strip().lower()
+    return lowered.startswith(".") or lowered in {
+        "__pycache__",
+        ".git",
+        ".venv",
+        "node_modules",
+        "appdata",
+        "programdata",
+        "$recycle.bin",
+        "system volume information",
+        ".idea",
+        ".vscode",
+    }
+
+
 def _open_path_default(path: str) -> str:
     if not path:
         path = _workspace_dir()
@@ -184,6 +237,75 @@ def register(mcp):
             return "\n".join(f"{name}: {path}" for name, path in known_user_paths().items())
         except Exception as e:
             return f"Error getting special paths: {str(e)}"
+
+    @mcp.tool()
+    def search_paths_by_name(
+        name: str,
+        roots: str = "desktop,documents,downloads,workspace,home",
+        max_results: int = 20,
+        max_depth: int = 8,
+        exact: bool = False,
+        directories_only: bool = True,
+    ) -> str:
+        """
+        Search common user folders for a file or folder by name.
+        Use this when the user mentions a project/folder/file name but not the full path.
+        roots supports built-in names like desktop, documents, downloads, workspace, and home.
+        """
+        try:
+            target = _normalize_search_name(name)
+            if not target:
+                return "Provide a file or folder name to search for."
+
+            search_roots = _iter_search_roots(roots)
+            if not search_roots:
+                return "No valid search roots were available."
+
+            result_limit = max(1, min(int(max_results), 100))
+            depth_limit = max(1, min(int(max_depth), 20))
+            matches: list[str] = []
+
+            for root in search_roots:
+                for current_root, dirs, files in os.walk(root):
+                    dirs[:] = [d for d in dirs if not _should_skip_search_dir(d)]
+                    if _depth_from_root(str(root), current_root) >= depth_limit:
+                        dirs[:] = []
+
+                    candidate_names = dirs if directories_only else dirs + files
+                    for candidate_name in candidate_names:
+                        candidate_lower = candidate_name.lower()
+                        matched = candidate_lower == target if exact else target in candidate_lower
+                        if not matched:
+                            continue
+
+                        full_path = str(Path(current_root) / candidate_name)
+                        matches.append(full_path)
+                        if len(matches) >= result_limit:
+                            break
+
+                    if len(matches) >= result_limit:
+                        break
+                if len(matches) >= result_limit:
+                    break
+
+            searched = ", ".join(str(path) for path in search_roots)
+            if not matches:
+                noun = "folders" if directories_only else "paths"
+                mode = "exactly named" if exact else "matching"
+                return (
+                    f"No {noun} {mode} '{name.strip()}' were found.\n"
+                    f"Searched roots: {searched}\n"
+                    f"Max depth: {depth_limit}"
+                )
+
+            label = "folder" if directories_only else "path"
+            suffix = "s" if len(matches) != 1 else ""
+            return (
+                f"Found {len(matches)} matching {label}{suffix} for '{name.strip()}':\n"
+                + "\n".join(f"- {match}" for match in matches)
+            )
+        except Exception as e:
+            return f"Error searching paths: {str(e)}"
 
     @mcp.tool()
     def list_workspace_files() -> str:
