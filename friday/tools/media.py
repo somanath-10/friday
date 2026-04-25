@@ -5,7 +5,6 @@ macOS: osascript / afplay
 Linux: pactl / amixer / mpg123
 """
 import subprocess
-import os
 import platform
 
 from friday.subprocess_utils import run_powershell
@@ -23,28 +22,15 @@ def register(mcp):
         """
         try:
             if OS == "Windows":
-                ps = (
-                    "Add-Type -TypeDefinition @'\n"
-                    "using System.Runtime.InteropServices;\n"
-                    "[Guid(\"5CDF2C82-841E-4546-9722-0CF74078229A\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
-                    "interface IAudioEndpointVolume { void a(); void b(); void c(); void d();\n"
-                    "  void SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);\n"
-                    "  void f(); int GetMasterVolumeLevelScalar(); }\n"
-                    "'@ -ErrorAction SilentlyContinue;"
-                    "[int]([Math]::Round((New-Object -ComObject WScript.Shell).SendKeys('') | % {} ; "
-                    + "(New-Object -ComObject Shell.Application).Windows() | % {} ;"
-                    + "[System.Audio.AudioEndpointVolume])) 2>&1 | Out-Null;"
-                    # Simpler approach via nircmd or registry
-                )
                 # Use a simpler fallback
-                result = run_powershell(
+                run_powershell(
                     "$vol = [System.Media.SystemSounds]::Beep; "
                     "$wsh = New-Object -ComObject WScript.Shell; "
                     "(Get-AudioDevice -Playback).Volume",
                     timeout=5,
                 )
                 # Most reliable: use the mixer
-                result2 = run_powershell(
+                run_powershell(
                     "Add-Type -AssemblyName System.Windows.Forms; "
                     "[System.Windows.Forms.SystemInformation]::MouseWheelScrollLines | Out-Null; "
                     "$vol = (Get-WmiObject -Query 'SELECT * FROM Win32_SoundDevice') | Select-Object -First 1; "
@@ -52,7 +38,7 @@ def register(mcp):
                     timeout=5,
                 )
                 # Best available: nircmd-style via PowerShell
-                r3 = run_powershell(
+                run_powershell(
                     "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');"
                     "$mixer = New-Object System.Windows.Forms.SendKeys;"
                     "Write-Output 'System volume control active'",
@@ -101,7 +87,7 @@ def register(mcp):
                     f"Write-Output 'Volume set to {level}% (reboot nircmd if not installed)' "
                     f"}} else {{ Write-Output 'Volume set to {level}%' }}"
                 )
-                result = run_powershell(ps_script, timeout=8)
+                run_powershell(ps_script, timeout=8)
                 # More reliable PowerShell volume control
                 ps2 = (
                     f"Add-Type -TypeDefinition '\n"
@@ -113,7 +99,7 @@ def register(mcp):
                     f"{int(level/2)} | % {{ 1..$_ | % {{ $wshell.SendKeys([char]175) }} }};\n"  # Vol up
                     f"Write-Output 'Volume adjusted to approximately {level}%'"
                 )
-                r2 = run_powershell(ps2, timeout=10)
+                run_powershell(ps2, timeout=10)
                 return f"System volume set to {level}%."
             elif OS == "Darwin":
                 result = subprocess.run(

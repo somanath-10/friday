@@ -20,6 +20,7 @@ import httpx
 
 from friday.path_utils import safe_filename, workspace_path
 from friday.tools.apps import OS, _load_json_records, _powershell, _ps_quote
+from friday.tools.error_handling import safe_tool
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
@@ -41,7 +42,16 @@ def _capture_desktop_screenshot(save_path: Path) -> None:
             timeout=15,
         )
         if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "macOS screenshot capture failed")
+            error_msg = result.stderr.strip()
+            if "could not create image from display" in error_msg:
+                raise RuntimeError(
+                    "macOS screenshot capture failed: Screen recording permission is required. "
+                    "To fix this, run the following command in your terminal to open the exact settings page:\n"
+                    "    open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture\"\n"
+                    "Then enable access for your terminal application."
+                )
+            else:
+                raise RuntimeError(f"macOS screenshot capture failed: {error_msg}")
         return
 
     if OS == "Windows":
@@ -180,6 +190,7 @@ def _openai_vision_text(image_path: Path, prompt: str) -> str:
 
 def register(mcp):
     @mcp.tool()
+    @safe_tool
     def inspect_desktop_screen(question: str = "", filename: str = "", include_windows: bool = True) -> str:
         """
         Capture the current desktop and return a screen-aware summary for the next action.
@@ -223,10 +234,11 @@ def register(mcp):
                 lines.append(f"Vision analysis unavailable: {vision_error}")
 
             return "\n".join(lines)
-        except Exception as e:
-            return f"Error inspecting desktop screen: {str(e)}"
+        except Exception:
+            raise
 
     @mcp.tool()
+    @safe_tool
     def locate_screen_target(target: str, filename: str = "", include_windows: bool = True) -> str:
         """
         Capture the current desktop and estimate the screen coordinates of a target element.
@@ -264,5 +276,5 @@ def register(mcp):
                 data["image_width"] = width
                 data["image_height"] = height
             return json.dumps(data, indent=2)
-        except Exception as e:
-            return f"Error locating screen target: {str(e)}"
+        except Exception:
+            raise

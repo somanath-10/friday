@@ -198,11 +198,42 @@ TTS_PROVIDER = "sarvam"     # "sarvam" | "openai"
 
 ## Adding a new tool
 
-1. Create or open a file in `friday/tools/`
-2. Define a `register(mcp)` function and decorate tools with `@mcp.tool()`
-3. Import and call `register(mcp)` inside `friday/tools/__init__.py`
+1. Create a new `.py` file in `friday/tools/`
+2. Define a `register(mcp)` function and decorate your tools with `@mcp.tool()`
+3. **That's it.** The dynamic plugin loader discovers and registers it automatically on next start — no changes to `__init__.py` needed.
 
-The MCP server will pick it up on next start.
+> [!TIP]
+> Apply `@safe_tool` from `friday.tools.error_handling` for automatic error handling and timing.
+> Apply `@cached_tool(ttl_seconds=N)` from `friday.tools.cache` for instant repeat lookups.
+
+---
+
+## Architecture (Phase 1–4 Upgrades)
+
+| Upgrade | What Changed |
+|---------|-------------|
+| **Dynamic Plugin Loader** | `friday/tools/__init__.py` uses `importlib` to auto-discover every `.py` file in the tools folder. Adding a new tool = drop a file. |
+| **Structured Logging** | All tool calls flow through `friday/logger.py`. Debug logs go to `workspace/logs/friday.log`; INFO goes to console. |
+| **Performance Caching** | `@cached_tool(ttl_seconds)` in `friday/tools/cache.py` provides in-memory caching. `search_web` and `fetch_url` cache for 30 min. |
+| **Input Validation** | `@validate_inputs(max_str_len)` in `error_handling.py` blocks oversized payloads before they reach the LLM. |
+| **Permissions Diagnostics** | `run_permission_diagnostics` tool tests Screen Recording and Accessibility on macOS and returns exact fix commands. |
+| **Context Manager** | 5 new tools (`get_context_stats`, `trim_context`, `get_session_summary`, `save_session_note`, `clear_session_context`) for managing conversation history. |
+| **Workflow Orchestrator** | Goal-level tools create preflighted plans, track progress, verify results, and preserve recovery context. |
+| **Testing Suite** | `pytest` + `pytest-mock` with unit and mock tests. Install with `uv sync --group dev`, then run `uv run pytest tests/`. |
+
+---
+
+## Documentation
+
+- [`docs/TOOLS.md`](docs/TOOLS.md) — Full catalogue of every MCP tool
+- [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) — Five end-to-end workflow examples
+
+## Dev Tooling
+
+- Install test and lint tooling: `uv sync --group dev`
+- Run tests: `uv run pytest tests/`
+- Run hooks once across the repo: `uv run pre-commit run --all-files`
+- CI uses the same `pytest` suite on a clean machine
 
 ---
 
@@ -211,8 +242,10 @@ The MCP server will pick it up on next start.
 - **[FastMCP](https://github.com/jlowin/fastmcp)** — MCP server framework
 - **[LiveKit Agents](https://github.com/livekit/agents)** — real-time voice pipeline
 - **Deepgram Nova-3** — STT
-- **Google Gemini 2.5 Flash** — LLM
-- **Sarvam Bulbul v3** — TTS
+- **Google Gemini 2.5 Flash / OpenAI** — LLM (configurable)
+- **Sarvam Bulbul v3 / OpenAI** — TTS (configurable)
+- **[Playwright](https://playwright.dev/)** — headless browser automation
 - **[uv](https://github.com/astral-sh/uv)** — fast Python package manager
+- **pytest + pytest-mock** — testing infrastructure
 
 ---

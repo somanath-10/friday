@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.venv/bin/python:*)"
+      "Bash(.venv/bin/python:*)",
+      "Bash(uv run *)",
+      "Bash(screencapture -x /tmp/test_screenshot.png)",
+      "Bash(echo \"Failed: $?\")",
+      "Bash(osascript *)"
     ]
   }
 }

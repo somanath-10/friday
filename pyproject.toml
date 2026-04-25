@@ -16,6 +16,14 @@ dependencies = [
     "trafilatura",
 ]
 
+[dependency-groups]
+dev = [
+    "pre-commit>=3.7.0",
+    "pytest>=8.2.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.4.1",
+]
+
 [project.scripts]
 friday = "server:main"
 friday_voice = "agent_friday:dev" # Points to the wrapper

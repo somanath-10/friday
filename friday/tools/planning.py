@@ -5,7 +5,7 @@ Planning tools — task decomposition, planning, and execution coordination.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 import os
@@ -58,17 +58,17 @@ async def build_task_decomposition(request: str) -> dict[str, Any]:
     )
 
     prompt = f"Decompose this request into a logical, multi-step plan: {request}"
-    
+
     try:
         response_text = await call_llm(prompt, system_prompt, json_mode=True)
         plan_data = json.loads(response_text)
-        
+
         # Ensure 'next_action' is present
         if "decomposition" in plan_data and plan_data["decomposition"]:
             plan_data["next_action"] = plan_data["decomposition"][0]["description"]
         else:
             plan_data["next_action"] = "No decomposition required"
-            
+
         return plan_data
     except Exception as e:
         return {
@@ -100,7 +100,7 @@ async def reflect_on_step(step_description: str, tool_output: str) -> str:
         "Output your analysis and a recommended next course of action."
     )
     prompt = f"Goal: {step_description}\nTool Output: {tool_output}"
-    
+
     return await call_llm(prompt, system_prompt)
 
 

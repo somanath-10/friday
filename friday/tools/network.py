@@ -5,7 +5,6 @@ Uses only stdlib + httpx (already in dependencies) — no extra packages needed.
 import subprocess
 import socket
 import platform
-import os
 
 from friday.subprocess_utils import run_powershell
 

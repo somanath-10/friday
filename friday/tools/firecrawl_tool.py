@@ -13,23 +13,23 @@ except ImportError:
 async def deep_scrape_url(url: str, use_firecrawl: bool = True) -> str:
     """
     Deeply scrape a URL and return clean, LLM-ready Markdown.
-    Uses Firecrawl (if API key present) for full-page JS rendering 
+    Uses Firecrawl (if API key present) for full-page JS rendering
     or Trafilatura for fast, reliable extraction of content.
     """
     api_key = os.environ.get("FIRECRAWL_API_KEY")
-    
+
     if use_firecrawl and api_key:
         try:
             # Use Firecrawl API directly via httpx for maximum control
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             payload = {"url": url, "formats": ["markdown"]}
-            
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post("https://api.firecrawl.dev/v1/scrape", json=payload, headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()
                     return data.get("data", {}).get("markdown", "No markdown found in response.")
-        except Exception as e:
+        except Exception:
             # Fallback to trafilatura on error
             pass
 

@@ -11,6 +11,7 @@ import base64
 import uuid
 
 from friday.path_utils import resolve_user_path, workspace_dir
+from friday.tools.error_handling import safe_tool
 
 BACKGROUND_TASKS = {}
 
@@ -96,6 +97,7 @@ def register(mcp):
             return f"Error executing code: {str(e)}"
 
     @mcp.tool()
+    @safe_tool
     def get_file_contents(file_path: str) -> str:
         """
         Read and return the full contents of any text file.
@@ -110,10 +112,11 @@ def register(mcp):
             return content
         except FileNotFoundError:
             return f"File not found: {resolve_user_path(file_path)}"
-        except Exception as e:
-            return f"Error reading file: {str(e)}"
+        except Exception:
+            raise
 
     @mcp.tool()
+    @safe_tool
     def write_file(file_path: str, content: str) -> str:
         """
         Write content to a file at any path. Creates parent directories if needed.
@@ -129,8 +132,8 @@ def register(mcp):
                 f.write(content)
             size_kb = len(content.encode('utf-8')) / 1024
             return f"Written {size_kb:.2f} KB to: {resolved_path}"
-        except Exception as e:
-            return f"Error writing file: {str(e)}"
+        except Exception:
+            raise
 
     @mcp.tool()
     def install_package(package_name: str) -> str:
@@ -139,11 +142,6 @@ def register(mcp):
         a third-party library.
         """
         try:
-            # Determine the .venv python/pip to avoid global installs
-            venv_python = os.path.join(
-                os.path.dirname(sys.executable), 'python'
-            ) if 'Scripts' not in sys.executable else sys.executable
-
             # Prefer uv pip install into the current venv, then fall back to pip
             for cmd in [
                 ['uv', 'pip', 'install', '--python', sys.executable, package_name],
@@ -353,17 +351,17 @@ def register(mcp):
     @mcp.tool()
     def profile_dataset(file_path: str) -> str:
         """
-        Quickly profile a CSV or JSON dataset without loading it into the LLM context. 
+        Quickly profile a CSV or JSON dataset without loading it into the LLM context.
         Returns headers, row count, and sample data.
         """
         try:
             if not file_path.endswith('.csv') and not file_path.endswith('.json'):
                 return "Only CSV and JSON datasets are supported for basic profiling."
-                
+
             resolved_path = resolve_user_path(file_path)
             if not os.path.exists(resolved_path):
                 return f"File does not exist: {resolved_path}"
-                
+
             if file_path.endswith('.csv'):
                 import csv
                 with open(resolved_path, 'r', encoding='utf-8') as f:
@@ -385,7 +383,7 @@ def register(mcp):
                         }, indent=2)
                     except StopIteration:
                         return "CSV file appears to be empty."
-            
+
             elif file_path.endswith('.json'):
                 with open(resolved_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -405,6 +403,6 @@ def register(mcp):
                             "key_count": len(data.keys()),
                             "sample_keys": {k: data[k] for k in list(data.keys())[:3]}
                         }, indent=2)
-                        
+
         except Exception as e:
             return f"Error profiling dataset: {str(e)}"

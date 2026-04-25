@@ -18,7 +18,9 @@ def execute_shell(command: str, timeout: int = 60) -> str:
         if OS == "Windows":
             result = run_powershell(command, timeout=timeout, no_profile=False, force_utf8=False)
         else:
-            result = subprocess.run(command, shell=True, executable="/bin/bash" if os.path.exists("/bin/bash") else None, capture_output=True, text=True, timeout=timeout)
+            # Use the appropriate shell for non-Windows systems
+            shell_path = "/bin/bash" if os.path.exists("/bin/bash") else "/bin/sh"
+            result = subprocess.run(command, shell=True, executable=shell_path, capture_output=True, text=True, timeout=timeout)
         output = ""
         if result.stdout:
             output += result.stdout.strip() + "\n"
@@ -39,7 +41,7 @@ def search_web(query: str) -> str:
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         html = urllib.request.urlopen(req, timeout=10).read().decode('utf-8')
-        
+
         blocks = re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
         out = []
         for url_raw, title, snippet in blocks[:5]:
@@ -52,7 +54,7 @@ def search_web(query: str) -> str:
 
 def spawn_subagent(objective: str, task_type: str = "auto") -> str:
     """
-    Delegate a sub-task to another autonomous agent. 
+    Delegate a sub-task to another autonomous agent.
     This allows parallel or hierarchical execution.
     """
     try:
@@ -60,14 +62,14 @@ def spawn_subagent(objective: str, task_type: str = "auto") -> str:
         # Core script is one level down in tools
         sdk_dir = os.path.dirname(os.path.abspath(__file__))
         core_script = os.path.join(sdk_dir, "tools", "worker_core.py")
-        
+
         import uuid
         task_id = str(uuid.uuid4())[:6]
-        
+
         workspace_dir = os.environ.get("FRIDAY_WORKSPACE_DIR", os.path.join(sdk_dir, "..", "workspace"))
         task_workspace = os.path.join(workspace_dir, f"subagent_{task_id}")
         os.makedirs(task_workspace, exist_ok=True)
-        
+
         # Fire and forget
         subprocess.Popen(
             [sys.executable, core_script, objective, task_workspace, task_type],
