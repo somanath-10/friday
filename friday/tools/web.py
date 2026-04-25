@@ -28,6 +28,24 @@ HEADERS = {
 }
 
 
+def _parse_rss_items(xml_text: str, limit: int = 8) -> list:
+    """Parse generic RSS items into the shared search result format."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    results = []
+    for item in root.findall(".//item")[:limit]:
+        title = html.unescape((item.findtext("title") or "").strip())
+        url = (item.findtext("link") or "").strip()
+        snippet_html = item.findtext("description") or ""
+        snippet = html.unescape(re.sub("<[^<]+?>", "", snippet_html)).strip()
+        if title and url:
+            results.append({"title": title, "url": url, "snippet": snippet})
+    return results
+
+
 async def fetch_and_parse_feed(client, url):
     """Helper function to handle a single feed request and parse its XML."""
     try:
@@ -98,6 +116,8 @@ async def _ddg_html_search(client: httpx.AsyncClient, query: str) -> list:
             return []
 
         html = resp.text
+        if "anomaly-modal" in html or "Unfortunately, bots use DuckDuckGo too." in html:
+            return []
         results = []
 
         # Extract result blocks
@@ -119,6 +139,22 @@ async def _ddg_html_search(client: httpx.AsyncClient, query: str) -> list:
                 results.append({"title": title, "url": real_url, "snippet": snippet})
 
         return results
+    except Exception:
+        return []
+
+
+async def _bing_rss_search(client: httpx.AsyncClient, query: str, count: int = 8) -> list:
+    """Fallback search via Bing's public RSS feed."""
+    try:
+        resp = await client.get(
+            "https://www.bing.com/search",
+            params={"q": query, "format": "rss"},
+            headers=HEADERS,
+            timeout=10,
+        )
+        if resp.status_code >= 400:
+            return []
+        return _parse_rss_items(resp.text, limit=count)
     except Exception:
         return []
 
@@ -183,7 +219,11 @@ def register(mcp):
                 # Priority 1: Brave API (best results)
                 results = await _brave_search(client, query)
 
-                # Priority 2: DDG HTML scraping
+                # Priority 2: Bing RSS fallback
+                if not results:
+                    results = await _bing_rss_search(client, query)
+
+                # Priority 3: DDG HTML scraping
                 if not results:
                     results = await _ddg_html_search(client, query)
 
@@ -217,6 +257,8 @@ def register(mcp):
                 tech_query = f"{query} site:stackoverflow.com OR site:github.com OR site:docs.python.org"
 
                 results = await _brave_search(client, tech_query)
+                if not results:
+                    results = await _bing_rss_search(client, tech_query)
                 if not results:
                     results = await _ddg_html_search(client, tech_query)
 

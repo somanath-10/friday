@@ -375,6 +375,82 @@ $apps |
     return _load_json_records(result.stdout)
 
 
+def _darwin_open_windows(query: str = "", limit: int = 25) -> list[dict[str, Any]]:
+    script = 'tell application "System Events" to get name of every process where background only is false'
+    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Failed to enumerate macOS windows")
+
+    rows = [
+        {"ProcessName": item.strip(), "MainWindowTitle": item.strip()}
+        for item in result.stdout.split(",")
+        if item.strip()
+    ]
+    if query.strip():
+        needle = query.lower()
+        rows = [
+            row for row in rows
+            if needle in str(row.get("ProcessName") or "").lower()
+            or needle in str(row.get("MainWindowTitle") or "").lower()
+        ]
+    return rows[:limit]
+
+
+def _darwin_installed_app_records(query: str = "", limit: int = 25) -> list[dict[str, Any]]:
+    search_roots = [
+        "/Applications",
+        "/System/Applications",
+        str(Path.home() / "Applications"),
+    ]
+    existing_roots = [root for root in search_roots if Path(root).exists()]
+    if not existing_roots:
+        return []
+
+    result = subprocess.run(
+        ["find", *existing_roots, "-maxdepth", "2", "-name", "*.app"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Failed to enumerate macOS applications")
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    needle = query.lower().strip()
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        app_path = Path(line.strip())
+        name = app_path.stem
+        key = name.lower()
+        if needle and needle not in key and needle not in str(app_path).lower():
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"Name": name, "Version": "", "InstallLocation": str(app_path)})
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _darwin_login_items(query: str = "", limit: int = 25) -> list[dict[str, Any]]:
+    script = 'tell application "System Events" to get the name of every login item'
+    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Failed to enumerate macOS login items")
+
+    items = [item.strip() for item in result.stdout.split(",") if item.strip()]
+    if query.strip():
+        needle = query.lower()
+        items = [item for item in items if needle in item.lower()]
+    return [
+        {"Source": "LoginItem", "Name": item, "Command": "", "Location": "System Settings > Login Items"}
+        for item in items[:limit]
+    ]
+
+
 def register(mcp):
 
     @mcp.tool()
@@ -780,12 +856,58 @@ def register(mcp):
                 _format_section("Key Paths", path_lines, "No user paths resolved."),
             ]
 
+            if OS == "Darwin":
+                if normalized in {"summary", "drives", "all"}:
+                    parts.append(list_disk_drives())
+
+                if normalized in {"summary", "windows", "all"}:
+                    window_rows = _darwin_open_windows(query=query, limit=limit)
+                    window_lines = [
+                        f"- {row.get('ProcessName') or '?'} | {_short(row.get('MainWindowTitle'))}"
+                        for row in window_rows
+                    ]
+                    parts.append(_format_section("Open Windows", window_lines, "No matching windows found."))
+
+                if normalized in {"summary", "apps", "all"}:
+                    app_rows = _darwin_installed_app_records(query=query, limit=limit)
+                    app_lines = [
+                        f"- {row.get('Name') or '(unnamed)'}"
+                        + (
+                            f" | location={_short(row.get('InstallLocation'))}"
+                            if row.get("InstallLocation") not in (None, "")
+                            else ""
+                        )
+                        for row in app_rows
+                    ]
+                    parts.append(_format_section("Installed Applications", app_lines, "No matching installed applications found."))
+
+                if normalized in {"startup", "all"}:
+                    startup_rows = _darwin_login_items(query=query, limit=limit)
+                    startup_lines = [
+                        f"- {row.get('Name') or '(unnamed)'} | {row.get('Location') or 'Login Items'}"
+                        for row in startup_rows
+                    ]
+                    parts.append(_format_section("Login Items", startup_lines, "No matching login items found."))
+
+                if normalized in {"services", "scheduled_tasks", "all"}:
+                    parts.append(
+                        "Service and scheduled-task inventory is still deeper on Windows. "
+                        "On macOS, use startup/login items plus open-window and installed-app scans."
+                    )
+
+                if normalized == "summary":
+                    parts.append(
+                        "Tip: use scan_system_inventory with section='all', 'apps', 'windows', or 'startup' for a deeper macOS audit."
+                    )
+
+                return "\n\n".join(parts)
+
             if OS != "Windows":
                 if normalized in {"summary", "drives", "all"}:
                     parts.append(list_disk_drives())
                 if normalized in {"summary", "windows", "apps", "startup", "services", "scheduled_tasks", "all"}:
                     parts.append(
-                        "Detailed machine inventory sections beyond basic drives and environment are currently Windows-focused."
+                        "Detailed machine inventory sections beyond basic drives and environment are currently Windows/macOS-focused."
                     )
                 return "\n\n".join(parts)
 

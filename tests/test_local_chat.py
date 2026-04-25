@@ -1,0 +1,15 @@
+from friday.local_chat import _direct_browser_open_shortcut
+
+
+def test_direct_browser_open_shortcut_builds_youtube_search():
+    shortcut = _direct_browser_open_shortcut("open Samay Raina is alive video")
+
+    assert shortcut is not None
+    assert shortcut.url == "https://www.youtube.com/results?search_query=samay+raina+is+alive"
+    assert shortcut.reply == "Opened YouTube results for 'samay raina is alive' in your browser."
+
+
+def test_direct_browser_open_shortcut_skips_local_video_folder_requests():
+    shortcut = _direct_browser_open_shortcut("open Desktop video folder")
+
+    assert shortcut is None

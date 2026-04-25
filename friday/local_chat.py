@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
@@ -143,6 +144,12 @@ class LocalChatResult:
 
 
 @dataclass(frozen=True)
+class BrowserOpenShortcut:
+    url: str
+    reply: str
+
+
+@dataclass(frozen=True)
 class ToolDescriptor:
     name: str
     description: str
@@ -260,6 +267,77 @@ def _real_browser_opening_hint(latest_user_message: str) -> str | None:
         "Prefer open_url for that. "
         "If the request is for YouTube or another site search, construct the destination URL directly and open it, "
         "then confirm the browser-opening tool succeeded."
+    )
+
+
+def _direct_browser_open_shortcut(latest_user_message: str) -> BrowserOpenShortcut | None:
+    lowered = " ".join(latest_user_message.strip().lower().split())
+    if not lowered:
+        return None
+
+    lowered = re.sub(r"^(?:hey\s+)?friday[, ]+", "", lowered)
+    action_pattern = r"^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:open|play|watch|show(?:\s+me)?)\s+"
+    if not re.match(action_pattern, lowered):
+        return None
+
+    if any(
+        marker in lowered
+        for marker in (
+            " folder",
+            " file",
+            " desktop",
+            " documents",
+            " downloads",
+            " workspace",
+            ".mp4",
+            ".mkv",
+            ".mov",
+            ".avi",
+            ".webm",
+        )
+    ):
+        return None
+
+    wants_youtube = any(
+        marker in lowered
+        for marker in (
+            "youtube",
+            " video",
+            " videos",
+            " song",
+            " songs",
+            " music",
+            " trailer",
+            " clip",
+            " short",
+            " shorts",
+        )
+    )
+    if not wants_youtube:
+        return None
+
+    query = re.sub(action_pattern, "", lowered)
+    query = re.sub(r"\b(?:on|in|from)\s+youtube\b", " ", query)
+    query = re.sub(r"\byoutube\b", " ", query)
+    query = re.sub(r"\s+", " ", query).strip(" .,!?-")
+
+    while True:
+        trimmed = re.sub(
+            r"(?:\b(?:video|videos|song|songs|music|trailer|clip|short|shorts)\b[\s.,!?-]*)$",
+            "",
+            query,
+        ).strip(" .,!?-")
+        if trimmed == query:
+            break
+        query = trimmed
+
+    if not query:
+        return None
+
+    url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(query)
+    return BrowserOpenShortcut(
+        url=url,
+        reply=f"Opened YouTube results for '{query}' in your browser.",
     )
 
 
@@ -687,6 +765,45 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
         read_stream, write_stream = streams
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
+            direct_browser_open = _direct_browser_open_shortcut(latest_user_message)
+            if direct_browser_open is not None:
+                result = await session.call_tool("open_url", {"url": direct_browser_open.url})
+                rendered_result = _render_tool_result(result)
+                tool_failed = _tool_call_failed(result, rendered_result)
+                tool_events.append(
+                    {
+                        "name": "open_url",
+                        "ok": not tool_failed,
+                        "preview": _truncate(rendered_result, 220),
+                    }
+                )
+                if not tool_failed:
+                    try:
+                        await record_conversation_turn(
+                            user_message=latest_user_message,
+                            assistant_reply=direct_browser_open.reply,
+                            tool_events=tool_events,
+                        )
+                        await store_action_trace(
+                            goal=latest_user_message,
+                            outcome=direct_browser_open.reply,
+                            tool_events=tool_events,
+                            status="completed",
+                        )
+                    except Exception:
+                        logger.exception("Failed to persist local chat trace")
+                    return LocalChatResult(reply=direct_browser_open.reply, tool_events=tool_events)
+
+                openai_messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "A deterministic browser-opening attempt with open_url failed. "
+                            "Recover with tools before ending the turn.\n\n"
+                            + _tool_failure_recovery_message("open_url", rendered_result)
+                        ),
+                    }
+                )
             tool_descriptors = await _load_tool_descriptors(session, mcp_url)
             openai_tools = _select_openai_tools(tool_descriptors, latest_user_message)
 

@@ -47,7 +47,12 @@ register_web_routes(mcp)
 
 
 def main():
-    mcp.run(transport="sse", mount_path=SERVER_MOUNT_PATH)
+    try:
+        mcp.run(transport="sse", mount_path=SERVER_MOUNT_PATH)
+    except KeyboardInterrupt:
+        # FastMCP/anyio turns an interactive Ctrl+C into a final KeyboardInterrupt
+        # after cancelling the SSE task. Keep shutdown quiet for local runs.
+        pass
 
 
 if __name__ == "__main__":

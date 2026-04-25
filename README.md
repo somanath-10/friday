@@ -11,6 +11,8 @@ A Tony Stark-inspired AI assistant with a local browser mode and an optional leg
 
 ---
 
+The core FRIDAY stack is built around the browser, filesystem, shell, desktop, and visible-app workflows that work across both Windows and macOS. Extra integrations should stay optional rather than being part of the required startup path.
+
 ## How it works
 
 ```
@@ -46,6 +48,7 @@ FRIDAY can now operate much more of the local machine from the browser chat or v
 - relay spoken or typed requests into the VS Code Codex extension with a local project snapshot first
 
 FRIDAY still works within the permissions of the user account and shell you start it with. Tasks that require administrator rights still need the host process to be run elevated.
+Calendar export is optional and disabled by default, so the base desktop/browser workflow does not depend on it.
 
 ---
 ## Quick start
@@ -174,8 +177,10 @@ Copy `.env.example` → `.env` and fill in the values below.
 | `GOOGLE_API_KEY` | ✅ (default LLM) | [aistudio.google.com](https://aistudio.google.com/projects) |
 | `FRIDAY_MAX_TOOL_STEPS` | optional | Raises per-turn tool budget for more complex tasks; default is `8` |
 | `FRIDAY_LOCAL_MAX_TOOL_ROUNDS` | optional | Raises the local browser chat tool-call budget; default is `14` |
-| `FRIDAY_LOCAL_MAX_OPENAI_TOOLS` | optional | Caps how many MCP tools the local browser chat exposes at once; default is `72` for faster replies |
+| `FRIDAY_LOCAL_MAX_OPENAI_TOOLS` | optional | Caps how many MCP tools the local browser chat exposes at once; default is `64` for faster replies |
 | `FRIDAY_BROWSER_HEADLESS` | optional | Set to `0` for a visible automation browser, or `1` for hidden Playwright sessions |
+| `FRIDAY_ENABLE_CALENDAR_TOOL` | optional | Set to `1` only if you want the `.ics` calendar export tool loaded; default is `0` |
+| `FRIDAY_DISABLED_TOOL_MODULES` | optional | Comma-separated tool module names to keep out of startup entirely, for example `calendar_tool` |
 | `OPENAI_VISION_MODEL` | optional | Override the model used by desktop vision tools; otherwise FRIDAY reuses `OPENAI_LLM_MODEL` |
 | `FRIDAY_CODEX_PROJECT_DIR` | optional | Default folder that relay mode opens in VS Code before sending your prompt |
 | `FRIDAY_CODEX_VSCODE_EXECUTABLE` | optional | Explicit path to `code` / `Code.exe` if the VS Code launcher is not on `PATH` |
@@ -219,6 +224,7 @@ TTS_PROVIDER = "sarvam"     # "sarvam" | "openai"
 | **Permissions Diagnostics** | `run_permission_diagnostics` tool tests Screen Recording and Accessibility on macOS and returns exact fix commands. |
 | **Context Manager** | 5 new tools (`get_context_stats`, `trim_context`, `get_session_summary`, `save_session_note`, `clear_session_context`) for managing conversation history. |
 | **Workflow Orchestrator** | Goal-level tools create preflighted plans, track progress, verify results, and preserve recovery context. |
+| **Optional Tool Gating** | Tool modules can be disabled by env so platform-specific or non-core integrations do not weaken the main Windows/macOS desktop flow. |
 | **Testing Suite** | `pytest` + `pytest-mock` with unit and mock tests. Install with `uv sync --group dev`, then run `uv run pytest tests/`. |
 
 ---

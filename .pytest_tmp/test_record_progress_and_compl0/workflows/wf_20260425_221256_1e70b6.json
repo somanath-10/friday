@@ -1,0 +1,95 @@
+{
+  "workflow_id": "wf_20260425_221256_1e70b6",
+  "goal": "Run tests and report the result",
+  "mode": "safe",
+  "status": "completed",
+  "created_at": "2026-04-25T22:12:56.916047",
+  "updated_at": "2026-04-25T22:12:56.987581",
+  "preflight": {
+    "goal": "Run tests and report the result",
+    "capabilities": [
+      "shell"
+    ],
+    "suggested_tools": [
+      "run_shell_command",
+      "execute_python_code"
+    ],
+    "status": "READY",
+    "checks": [
+      {
+        "name": "workspace",
+        "status": "READY",
+        "message": "Workspace is writable: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\.pytest_tmp\\test_record_progress_and_compl0"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "understand",
+      "title": "Clarify intent and constraints",
+      "status": "pending",
+      "detail": "Confirm objective, inputs, outputs, and safety level for: Run tests and report the result",
+      "verification": "The requested outcome is concrete and testable."
+    },
+    {
+      "id": "preflight",
+      "title": "Check readiness",
+      "status": "pending",
+      "detail": "Validate required permissions, provider keys, workspace access, and dependencies.",
+      "verification": "No blocker remains before execution."
+    },
+    {
+      "id": "execute",
+      "title": "Execute with tools",
+      "status": "passed",
+      "detail": "Run the minimum necessary tool chain for the goal.",
+      "tools": [
+        "run_shell_command",
+        "execute_python_code"
+      ],
+      "verification": "Each tool output is checked before moving to the next step.",
+      "result": "pytest passed",
+      "next_action": "verify output"
+    },
+    {
+      "id": "verify",
+      "title": "Verify result",
+      "status": "pending",
+      "detail": "Run tests, inspect files, check UI state, or validate generated output.",
+      "verification": "The final artifact or action matches the user's goal."
+    },
+    {
+      "id": "recover",
+      "title": "Recover if needed",
+      "status": "pending",
+      "detail": "If a step fails, use fallback tools, cached data, or a smaller safe action.",
+      "verification": "Failures have a next action instead of a dead end."
+    },
+    {
+      "id": "report",
+      "title": "Report and remember",
+      "status": "pending",
+      "detail": "Summarize outcome, changed files, checks run, and follow-up risk. Mode: safe.",
+      "verification": "The user can see exactly what worked and what remains."
+    }
+  ],
+  "events": [
+    {
+      "timestamp": "2026-04-25T22:12:56.961434",
+      "step_id": "execute",
+      "status": "passed",
+      "result": "pytest passed",
+      "next_action": "verify output"
+    },
+    {
+      "timestamp": "2026-04-25T22:12:56.987581",
+      "step_id": "complete",
+      "status": "completed",
+      "result": "All checks passed",
+      "next_action": ""
+    }
+  ],
+  "path": "C:\\Users\\soman\\OneDrive\\Desktop\\friday\\.pytest_tmp\\test_record_progress_and_compl0\\workflows\\wf_20260425_221256_1e70b6.json",
+  "outcome": "All checks passed",
+  "verified": true
+}

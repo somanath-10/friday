@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from friday.config import tool_module_enabled
 from friday.subprocess_utils import decode_subprocess_text
 
 
@@ -324,6 +325,7 @@ async def _run_desktop_workflow_checks(mcp: Any, results: list[CheckResult]) -> 
 
 async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results: list[CheckResult]) -> None:
     mcp = server_module.mcp
+    calendar_enabled = tool_module_enabled("calendar_tool")
 
     try:
         tools = await mcp.list_tools()
@@ -428,19 +430,41 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
     else:
         _record(results, "tool.read_pdf", SKIP, "Sample PDF fixture not found.")
 
-    await expect_text(
-        "tool.create_calendar_event",
-        "create_calendar_event",
-        {"title": "Health Check", "start_datetime": "2026-05-01 09:00"},
-        lambda output: ".ics" in output,
-    )
-    await expect_text(
-        "tool.add_reminder",
-        "add_reminder",
-        {"text": "Smoke test reminder", "remind_at": "2026-05-01 09:00"},
-        lambda output: "Reminder set" in output,
-    )
-    await expect_text("tool.list_reminders", "list_reminders", {}, lambda output: "Smoke test reminder" in output)
+    if calendar_enabled:
+        await expect_text(
+            "tool.create_calendar_event",
+            "create_calendar_event",
+            {"title": "Health Check", "start_datetime": "2026-05-01 09:00"},
+            lambda output: ".ics" in output,
+        )
+    else:
+        _record(
+            results,
+            "tool.create_calendar_event",
+            SKIP,
+            "Calendar export is disabled by default. Set FRIDAY_ENABLE_CALENDAR_TOOL=1 to enable ICS generation.",
+        )
+    if calendar_enabled:
+        await expect_text(
+            "tool.add_reminder",
+            "add_reminder",
+            {"text": "Smoke test reminder", "remind_at": "2026-05-01 09:00"},
+            lambda output: "Reminder set" in output,
+        )
+        await expect_text("tool.list_reminders", "list_reminders", {}, lambda output: "Smoke test reminder" in output)
+    else:
+        _record(
+            results,
+            "tool.add_reminder",
+            SKIP,
+            "Reminder tools are disabled with calendar_tool. Set FRIDAY_ENABLE_CALENDAR_TOOL=1 to enable them.",
+        )
+        _record(
+            results,
+            "tool.list_reminders",
+            SKIP,
+            "Reminder tools are disabled with calendar_tool. Set FRIDAY_ENABLE_CALENDAR_TOOL=1 to enable them.",
+        )
     await expect_text(
         "tool.record_conversation_turn",
         "record_conversation_turn",
@@ -498,26 +522,34 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
         lambda output: "Status: completed" in output,
     )
 
-    try:
-        reminder_listing = await _call_text(mcp, "list_reminders", {})
-        reminder_id = ""
-        for line in reminder_listing.splitlines():
-            if "Smoke test reminder" in line and (line.startswith("[TODO] ") or line.startswith("[DONE] ")):
-                parts = line.split("] [", 1)
-                if len(parts) == 2:
-                    reminder_id = parts[1].split("]", 1)[0]
-                break
-        if reminder_id:
-            await expect_text(
-                "tool.mark_reminder_done",
-                "mark_reminder_done",
-                {"reminder_id": reminder_id},
-                lambda output: "marked as done" in output.lower(),
-            )
-        else:
-            _record(results, "tool.mark_reminder_done", FAIL, "Could not locate reminder id in listing.")
-    except Exception as exc:
-        _record(results, "tool.mark_reminder_done", FAIL, str(exc))
+    if calendar_enabled:
+        try:
+            reminder_listing = await _call_text(mcp, "list_reminders", {})
+            reminder_id = ""
+            for line in reminder_listing.splitlines():
+                if "Smoke test reminder" in line and (line.startswith("[TODO] ") or line.startswith("[DONE] ")):
+                    parts = line.split("] [", 1)
+                    if len(parts) == 2:
+                        reminder_id = parts[1].split("]", 1)[0]
+                    break
+            if reminder_id:
+                await expect_text(
+                    "tool.mark_reminder_done",
+                    "mark_reminder_done",
+                    {"reminder_id": reminder_id},
+                    lambda output: "marked as done" in output.lower(),
+                )
+            else:
+                _record(results, "tool.mark_reminder_done", FAIL, "Could not locate reminder id in listing.")
+        except Exception as exc:
+            _record(results, "tool.mark_reminder_done", FAIL, str(exc))
+    else:
+        _record(
+            results,
+            "tool.mark_reminder_done",
+            SKIP,
+            "Reminder tools are disabled with calendar_tool. Set FRIDAY_ENABLE_CALENDAR_TOOL=1 to enable them.",
+        )
 
     await expect_text("tool.git_status", "git_status", {"repo_path": str(repo_root)}, lambda output: "Git Status" in output or "Working tree clean" in output)
     await expect_text("tool.git_branch", "git_branch", {"repo_path": str(repo_root)}, lambda output: "Branches:" in output)

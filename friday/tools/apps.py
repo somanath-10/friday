@@ -843,8 +843,46 @@ def register(mcp):
                 script = f'tell application "{_escape_applescript_string(app_name)}" to quit'
                 result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
             elif OS == "Windows":
-                # Try graceful taskkill first (no /F)
-                result = subprocess.run(["taskkill", "/IM", f"{app_name}.exe"], capture_output=True, text=True, timeout=10)
+                candidates = _candidate_names(app_name)
+                last_detail = ""
+
+                # Try graceful taskkill first (no /F) across likely executable names.
+                for candidate in candidates:
+                    image_name = candidate if candidate.lower().endswith(".exe") else f"{candidate}.exe"
+                    result = subprocess.run(["taskkill", "/IM", image_name], capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        return f"Closed {app_name} successfully."
+                    detail = (result.stderr or result.stdout).strip()
+                    if detail and "not found" not in detail.lower():
+                        last_detail = detail
+
+                patterns = ", ".join(_ps_quote(candidate) for candidate in candidates)
+                ps_script = f"""
+$patterns = @({patterns})
+$targets = Get-Process | Where-Object {{
+  $name = $_.ProcessName
+  $title = $_.MainWindowTitle
+  @($patterns | Where-Object {{
+    ($name -and $name -like "*$_*") -or ($title -and $title -like "*$_*")
+  }}).Count -gt 0
+}} | Sort-Object Id -Unique
+
+if ($targets.Count -gt 0) {{
+  $targets | Stop-Process -ErrorAction Stop
+  Write-Output ($targets | ForEach-Object {{ "{0} [{1}]" -f $_.ProcessName, $_.Id }})
+  exit 0
+}}
+
+exit 3
+"""
+                result = _powershell(ps_script, timeout=10)
+                if result.returncode == 0:
+                    return f"Closed {app_name} successfully."
+
+                detail = (result.stderr or result.stdout).strip() or last_detail
+                if result.returncode == 3 or "not found" in detail.lower():
+                    return f"{app_name} is already closed or not running."
+                return f"Could not close '{app_name}': {detail}"
             else:  # Linux
                 # Try wmctrl first for graceful window close
                 result = subprocess.run(["wmctrl", "-c", app_name], capture_output=True, text=True, timeout=10)
