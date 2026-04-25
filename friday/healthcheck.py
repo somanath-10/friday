@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from friday.config import tool_module_enabled
+from friday.config import build_runtime_status, tool_module_enabled
 from friday.subprocess_utils import decode_subprocess_text
 
 
@@ -148,6 +148,33 @@ def _module_name_from_error_text(text: str) -> str:
     return match.group(1) if match else ""
 
 
+def _truncate_detail(text: str, limit: int = 280) -> str:
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[: limit - 20] + "... [truncated]"
+
+
+def _stop_subprocess(process: subprocess.Popen[bytes]) -> tuple[str, str]:
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+    try:
+        stdout, stderr = process.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate(timeout=2)
+
+    return (
+        _truncate_detail(decode_subprocess_text(stdout)),
+        _truncate_detail(decode_subprocess_text(stderr)),
+    )
+
+
 async def _call_text(mcp: Any, tool_name: str, args: dict[str, Any] | None = None) -> str:
     result = await mcp.call_tool(tool_name, args or {})
     return _extract_text(result)
@@ -187,52 +214,64 @@ class _LocalPageHandler(BaseHTTPRequestHandler):
 def _build_env_readiness() -> list[CheckResult]:
     results: list[CheckResult] = []
 
-    local_browser_ready = bool(os.getenv("OPENAI_API_KEY"))
-    if local_browser_ready:
-        _record(results, "config.local_browser", PASS, "OPENAI_API_KEY is present for local browser chat.")
-    else:
-        _record(results, "config.local_browser", WARN, "OPENAI_API_KEY is missing. The local browser UI will load, but chat will not work.")
+    status = build_runtime_status()
 
-    livekit_ready = all(
-        os.getenv(key)
-        for key in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET")
-    )
-    if livekit_ready:
-        _record(results, "config.livekit", PASS, "LiveKit credentials are present.")
-    else:
-        _record(results, "config.livekit", WARN, "LiveKit credentials are incomplete. friday_voice will not be able to join rooms.")
-
-    provider_requirements = {
-        "openai": "OPENAI_API_KEY",
-        "gemini": "GOOGLE_API_KEY",
-        "deepgram": "DEEPGRAM_API_KEY",
-        "sarvam": "SARVAM_API_KEY",
-        "whisper": "OPENAI_API_KEY",
-    }
-    stt_provider = os.getenv("STT_PROVIDER", "deepgram").strip().lower()
-    llm_provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
-    tts_provider = os.getenv("TTS_PROVIDER", "openai").strip().lower()
-
-    voice_missing: list[str] = []
-    for label, provider in (("stt", stt_provider), ("llm", llm_provider), ("tts", tts_provider)):
-        required_key = provider_requirements.get(provider)
-        if required_key and not os.getenv(required_key):
-            voice_missing.append(f"{label}:{required_key}")
-
-    if voice_missing:
+    if status["app_ready"]:
         _record(
             results,
-            "config.voice_providers",
-            WARN,
-            "Missing provider keys: " + ", ".join(voice_missing),
+            "config.local_browser",
+            PASS,
+            f"Local browser mode is ready using {status['llm_provider']} / {status['llm_model']}.",
         )
     else:
+        _record(
+            results,
+            "config.local_browser",
+            WARN,
+            "; ".join(status["setup_issues"]),
+        )
+
+    if status["legacy_livekit_configured"]:
+        _record(results, "config.livekit", PASS, "LiveKit credentials are present.")
+    else:
+        _record(
+            results,
+            "config.livekit",
+            WARN,
+            "LiveKit credentials are incomplete. The optional friday_voice worker will not be able to join rooms.",
+        )
+
+    providers = status["voice_providers"]
+    if status["voice_configured"]:
         _record(
             results,
             "config.voice_providers",
             PASS,
-            f"Provider keys are present for STT={stt_provider}, LLM={llm_provider}, TTS={tts_provider}.",
+            f"Voice providers are configured for STT={providers['stt']}, LLM={providers['llm']}, TTS={providers['tts']}.",
         )
+    else:
+        _record(
+            results,
+            "config.voice_providers",
+            WARN,
+            "Optional legacy voice mode is missing: " + ", ".join(status["voice_missing_keys"]),
+        )
+
+    browser_status = PASS if status["browser_automation_ready"] else WARN
+    browser_detail = (
+        "Playwright browser automation is ready."
+        if status["browser_automation_ready"]
+        else "Playwright browser automation is not ready. Browser tools can still use non-Playwright fallbacks where available."
+    )
+    _record(results, "config.browser_automation", browser_status, browser_detail)
+
+    desktop_status = PASS if status["desktop_control_ready"] else WARN
+    desktop_detail = (
+        "Desktop control prerequisites are available."
+        if status["desktop_control_ready"]
+        else "Desktop control prerequisites are incomplete. Run the desktop healthcheck or permission diagnostics for details."
+    )
+    _record(results, "config.desktop_control", desktop_status, desktop_detail)
 
     if os.getenv("BRAVE_API_KEY"):
         _record(results, "config.brave_search", PASS, "BRAVE_API_KEY is present.")
@@ -657,6 +696,7 @@ def _server_startup_check(repo_root: Path) -> CheckResult:
         stderr=subprocess.PIPE,
         text=False,
     )
+    output_snippets: tuple[str, str] | None = None
 
     try:
         html = _wait_for_url(f"http://127.0.0.1:{port}/")
@@ -666,16 +706,12 @@ def _server_startup_check(repo_root: Path) -> CheckResult:
         if "FRIDAY" not in html.upper() and "Friday" not in html:
             return CheckResult("server.startup", FAIL, "Server responded, but the local UI HTML did not look correct.")
 
-        ready = status.get("ready")
-        detail = f"HTTP UI loaded on port {port}; /status ready={ready}."
+        ready = status.get("app_ready", status.get("ready"))
+        detail = f"HTTP UI loaded on port {port}; /status app_ready={ready}."
         return CheckResult("server.startup", PASS, detail)
     except Exception as exc:
-        stderr = ""
-        if process.stderr is not None:
-            try:
-                stderr = decode_subprocess_text(process.stderr.read()).strip()
-            except Exception:
-                stderr = ""
+        output_snippets = _stop_subprocess(process)
+        stdout, stderr = output_snippets
 
         missing_module = ""
         if isinstance(exc, ModuleNotFoundError) and exc.name:
@@ -687,15 +723,13 @@ def _server_startup_check(repo_root: Path) -> CheckResult:
         if missing_module:
             detail += f" | {_missing_dependency_detail(missing_module)}"
         if stderr:
-            detail += f" | stderr: {stderr[:240]}"
+            detail += f" | stderr: {stderr}"
+        if stdout:
+            detail += f" | stdout: {stdout}"
         return CheckResult("server.startup", FAIL, detail)
     finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
+        if output_snippets is None:
+            _stop_subprocess(process)
 
 
 async def _collect_results() -> list[CheckResult]:

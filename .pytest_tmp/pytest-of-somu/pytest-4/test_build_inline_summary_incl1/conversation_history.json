@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "updated": "2026-04-26T00:46:38.202500"
+  },
+  "data": [
+    {
+      "user_message": "hello",
+      "assistant_reply": "hi",
+      "tool_events": [],
+      "timestamp": "2026-04-24T10:00:00"
+    }
+  ]
+}

@@ -18,10 +18,10 @@ from urllib.parse import urlsplit, urlunsplit
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from friday.config import build_runtime_status
 from friday.codex_bridge import codex_relay_status, dispatch_to_vscode_codex
 from friday.local_chat import (
     local_greeting,
-    local_mode_issues,
     run_local_chat,
     transcribe_browser_audio,
 )
@@ -86,31 +86,19 @@ def _mcp_server_url(request: Request | None = None) -> str:
 
 
 def _local_status(request: Request | None = None) -> dict[str, Any]:
-    llm_provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
-    llm_model = (
-        os.getenv("OPENAI_LLM_MODEL", "gpt-4o").strip()
-        if llm_provider == "openai"
-        else os.getenv("GEMINI_LLM_MODEL", "gemini-2.5-flash").strip()
-    )
-    issues = local_mode_issues()
+    status = build_runtime_status(mode="local-browser")
     codex_status = codex_relay_status()
 
-    return {
-        "server_name": os.getenv("SERVER_NAME", "Friday").strip() or "Friday",
-        "mode": "local-browser",
+    status.update(
+        {
         "mcp_server_url": _mcp_server_url(request),
-        "llm_provider": llm_provider,
-        "llm_model": llm_model,
         "browser_voice_input": "MediaRecorder microphone capture with backend transcription",
         "browser_voice_output": "speechSynthesis",
-        "issues": issues,
-        "ready": not issues,
         "greeting": local_greeting(),
         "codex_relay": codex_status,
-        "legacy_livekit_configured": bool(
-            os.getenv("LIVEKIT_URL") and os.getenv("LIVEKIT_API_KEY") and os.getenv("LIVEKIT_API_SECRET")
-        ),
-    }
+        }
+    )
+    return status
 
 
 def _render_page(request: Request) -> str:

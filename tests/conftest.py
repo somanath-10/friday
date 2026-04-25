@@ -1,5 +1,14 @@
 import pytest
 import os
+import tempfile
+from pathlib import Path
+
+
+_TEST_TEMP_ROOT = Path(os.environ.get("FRIDAY_TEST_TMPDIR", Path.cwd() / ".pytest_tmp")).resolve()
+_TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+for _name in ("TMPDIR", "TEMP", "TMP"):
+    os.environ[_name] = str(_TEST_TEMP_ROOT)
+tempfile.tempdir = str(_TEST_TEMP_ROOT)
 
 @pytest.fixture
 def mock_workspace(tmp_path):

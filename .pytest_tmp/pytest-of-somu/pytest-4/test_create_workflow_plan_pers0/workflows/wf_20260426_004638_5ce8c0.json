@@ -1,0 +1,78 @@
+{
+  "workflow_id": "wf_20260426_004638_5ce8c0",
+  "goal": "Read a file and write a summary",
+  "mode": "balanced",
+  "status": "planned",
+  "created_at": "2026-04-26T00:46:38.467352",
+  "updated_at": "2026-04-26T00:46:38.467352",
+  "preflight": {
+    "goal": "Read a file and write a summary",
+    "capabilities": [
+      "files"
+    ],
+    "suggested_tools": [
+      "get_file_contents",
+      "write_file",
+      "list_directory_tree"
+    ],
+    "status": "READY",
+    "checks": [
+      {
+        "name": "workspace",
+        "status": "READY",
+        "message": "Workspace is writable: C:\\Users\\soman\\OneDrive\\Desktop\\friday\\.pytest_tmp\\pytest-of-somu\\pytest-4\\test_create_workflow_plan_pers0"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "understand",
+      "title": "Clarify intent and constraints",
+      "status": "pending",
+      "detail": "Confirm objective, inputs, outputs, and safety level for: Read a file and write a summary",
+      "verification": "The requested outcome is concrete and testable."
+    },
+    {
+      "id": "preflight",
+      "title": "Check readiness",
+      "status": "pending",
+      "detail": "Validate required permissions, provider keys, workspace access, and dependencies.",
+      "verification": "No blocker remains before execution."
+    },
+    {
+      "id": "execute",
+      "title": "Execute with tools",
+      "status": "pending",
+      "detail": "Run the minimum necessary tool chain for the goal.",
+      "tools": [
+        "get_file_contents",
+        "write_file",
+        "list_directory_tree"
+      ],
+      "verification": "Each tool output is checked before moving to the next step."
+    },
+    {
+      "id": "verify",
+      "title": "Verify result",
+      "status": "pending",
+      "detail": "Run tests, inspect files, check UI state, or validate generated output.",
+      "verification": "The final artifact or action matches the user's goal."
+    },
+    {
+      "id": "recover",
+      "title": "Recover if needed",
+      "status": "pending",
+      "detail": "If a step fails, use fallback tools, cached data, or a smaller safe action.",
+      "verification": "Failures have a next action instead of a dead end."
+    },
+    {
+      "id": "report",
+      "title": "Report and remember",
+      "status": "pending",
+      "detail": "Summarize outcome, changed files, checks run, and follow-up risk. Mode: balanced.",
+      "verification": "The user can see exactly what worked and what remains."
+    }
+  ],
+  "events": [],
+  "path": "C:\\Users\\soman\\OneDrive\\Desktop\\friday\\.pytest_tmp\\pytest-of-somu\\pytest-4\\test_create_workflow_plan_pers0\\workflows\\wf_20260426_004638_5ce8c0.json"
+}

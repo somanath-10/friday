@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "updated": "2026-04-26T00:45:57.300530"
+  },
+  "data": [
+    {
+      "user_message": "What is 2+2?",
+      "assistant_reply": "It is 4.",
+      "tool_events": [],
+      "timestamp": "2026-04-24T10:00:00"
+    }
+  ]
+}

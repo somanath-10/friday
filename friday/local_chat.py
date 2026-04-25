@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
+from friday.config import local_browser_setup_issues
 from friday.tools.memory import record_conversation_turn, store_action_trace
 
 
@@ -173,12 +174,7 @@ def local_greeting() -> str:
 
 
 def local_mode_issues() -> list[str]:
-    issues: list[str] = []
-    if os.getenv("LLM_PROVIDER", "openai").strip().lower() != "openai":
-        issues.append("Set LLM_PROVIDER=openai for local browser mode.")
-    if not os.getenv("OPENAI_API_KEY"):
-        issues.append("OPENAI_API_KEY is required for local browser mode.")
-    return issues
+    return local_browser_setup_issues()
 
 
 def local_mode_ready() -> bool:
