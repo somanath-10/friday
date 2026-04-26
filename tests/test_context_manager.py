@@ -3,12 +3,12 @@ from friday.tools.context_manager import ContextManager
 
 
 @pytest.fixture
-def ctx(tmp_path, monkeypatch):
+def ctx(isolated_temp_dir, monkeypatch):
     """Isolated ContextManager using a temp memory directory."""
-    monkeypatch.setenv("FRIDAY_MEMORY_DIR", str(tmp_path))
+    monkeypatch.setenv("FRIDAY_MEMORY_DIR", str(isolated_temp_dir))
     # Re-instantiate so it uses the monkeypatched env
     from friday import path_utils
-    monkeypatch.setattr(path_utils, "memory_dir", lambda: tmp_path)
+    monkeypatch.setattr(path_utils, "memory_dir", lambda: isolated_temp_dir)
     manager = ContextManager()
     return manager
 

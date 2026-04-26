@@ -14,7 +14,7 @@ import os
 import re
 import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -23,6 +23,7 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 
 from friday.config import local_browser_setup_issues
+from friday.core.executor import run_structured_command
 from friday.tools.memory import record_conversation_turn, store_action_trace
 
 
@@ -142,6 +143,7 @@ _TOOL_DESCRIPTOR_CACHE: dict[str, tuple[float, tuple["ToolDescriptor", ...]]] = 
 class LocalChatResult:
     reply: str
     tool_events: list[dict[str, Any]]
+    pipeline_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -744,6 +746,20 @@ async def transcribe_browser_audio(
     raise last_error or RuntimeError("Audio transcription failed.")
 
 
+def _structured_pipeline_enabled() -> bool:
+    value = os.getenv("FRIDAY_ENABLE_STRUCTURED_PIPELINE", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+async def _invoke_rendered_tool(
+    session: ClientSession,
+    tool_name: str,
+    params: dict[str, object],
+) -> str:
+    result = await session.call_tool(tool_name, params)
+    return _render_tool_result(result)
+
+
 async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalChatResult:
     if not local_mode_ready():
         raise RuntimeError("; ".join(local_mode_issues()))
@@ -800,6 +816,36 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
                         ),
                     }
                 )
+            if _structured_pipeline_enabled() and latest_user_message:
+                structured_result = await run_structured_command(
+                    latest_user_message,
+                    lambda tool_name, params: _invoke_rendered_tool(session, tool_name, params),
+                )
+                if structured_result.handled:
+                    tool_events.extend(structured_result.tool_events)
+                    status = "completed" if structured_result.success else (
+                        "approval_required" if structured_result.permission_pending else "failed"
+                    )
+                    try:
+                        await record_conversation_turn(
+                            user_message=latest_user_message,
+                            assistant_reply=structured_result.reply,
+                            tool_events=tool_events,
+                        )
+                        await store_action_trace(
+                            goal=latest_user_message,
+                            outcome=structured_result.reply,
+                            tool_events=tool_events,
+                            status=status,
+                        )
+                    except Exception:
+                        logger.exception("Failed to persist structured local chat trace")
+                    return LocalChatResult(
+                        reply=structured_result.reply,
+                        tool_events=tool_events,
+                        pipeline_events=structured_result.pipeline_events,
+                    )
+
             tool_descriptors = await _load_tool_descriptors(session, mcp_url)
             openai_tools = _select_openai_tools(tool_descriptors, latest_user_message)
 

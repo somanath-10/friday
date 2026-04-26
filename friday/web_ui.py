@@ -74,12 +74,12 @@ def _browser_base_url(request: Request) -> str:
 
 def _mcp_server_url(request: Request | None = None) -> str:
     sse_path = os.getenv("MCP_SSE_PATH", "/sse").strip() or "/sse"
+    if request is not None:
+        return f"{_browser_base_url(request)}{sse_path}"
+
     configured = _canonicalize_url(os.getenv("MCP_SERVER_URL", "").strip())
     if configured:
         return configured
-
-    if request is not None:
-        return f"{_browser_base_url(request)}{sse_path}"
 
     port = os.getenv("MCP_SERVER_PORT", "8000").strip() or "8000"
     return f"http://127.0.0.1:{port}{sse_path}"
@@ -3129,6 +3129,7 @@ def register_web_routes(mcp) -> None:
             {
                 "reply": result.reply,
                 "tool_events": result.tool_events,
+                "pipeline_events": result.pipeline_events,
             }
         )
 

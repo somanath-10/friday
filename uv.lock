@@ -731,6 +731,7 @@ dependencies = [
     { name = "pyautogui" },
     { name = "pypdf" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "trafilatura" },
 ]
 
@@ -752,6 +753,7 @@ requires-dist = [
     { name = "pyautogui" },
     { name = "pypdf" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "trafilatura" },
 ]
 

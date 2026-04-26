@@ -10,6 +10,11 @@ import sys
 import time
 from pathlib import Path
 
+from friday.core.permissions import (
+    authorize_tool_call,
+    format_permission_response,
+    record_tool_result,
+)
 from friday.path_utils import (
     known_user_paths,
     resolve_user_path,
@@ -393,6 +398,18 @@ def register(mcp):
             if destination.exists() and not overwrite:
                 return f"Destination already exists: {destination}. Set overwrite=true to replace it."
 
+            decision, approval_request = authorize_tool_call(
+                "copy_path",
+                {
+                    "source_path": source_path,
+                    "destination_path": destination_path,
+                    "overwrite": overwrite,
+                },
+                working_directory=_workspace_dir(),
+            )
+            if decision.decision != "allow":
+                return format_permission_response(decision, approval_request=approval_request)
+
             if destination.exists():
                 if destination.is_dir():
                     shutil.rmtree(destination)
@@ -402,11 +419,30 @@ def register(mcp):
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
                 shutil.copytree(source, destination)
+                record_tool_result(
+                    "copy_path",
+                    decision,
+                    result="succeeded",
+                    path=str(destination),
+                )
                 return f"Copied folder to {destination}"
 
             shutil.copy2(source, destination)
+            record_tool_result(
+                "copy_path",
+                decision,
+                result="succeeded",
+                path=str(destination),
+            )
             return f"Copied file to {destination}"
         except Exception as e:
+            if "decision" in locals():
+                record_tool_result(
+                    "copy_path",
+                    decision,
+                    result=f"error:{e.__class__.__name__}",
+                    path=destination_path,
+                )
             return f"Error copying path: {str(e)}"
 
     @mcp.tool()
@@ -424,6 +460,18 @@ def register(mcp):
             if destination.exists() and not overwrite:
                 return f"Destination already exists: {destination}. Set overwrite=true to replace it."
 
+            decision, approval_request = authorize_tool_call(
+                "move_path",
+                {
+                    "source_path": source_path,
+                    "destination_path": destination_path,
+                    "overwrite": overwrite,
+                },
+                working_directory=_workspace_dir(),
+            )
+            if decision.decision != "allow":
+                return format_permission_response(decision, approval_request=approval_request)
+
             if destination.exists():
                 if destination.is_dir():
                     shutil.rmtree(destination)
@@ -432,8 +480,21 @@ def register(mcp):
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(source), str(destination))
+            record_tool_result(
+                "move_path",
+                decision,
+                result="succeeded",
+                path=str(destination),
+            )
             return f"Moved path to {destination}"
         except Exception as e:
+            if "decision" in locals():
+                record_tool_result(
+                    "move_path",
+                    decision,
+                    result=f"error:{e.__class__.__name__}",
+                    path=destination_path,
+                )
             return f"Error moving path: {str(e)}"
 
     @mcp.tool()
@@ -450,15 +511,44 @@ def register(mcp):
             if target.is_dir():
                 if any(target.iterdir()) and not recursive:
                     return f"Folder is not empty: {target}. Set recursive=true to remove it."
+
+            decision, approval_request = authorize_tool_call(
+                "delete_path",
+                {"path": path, "recursive": recursive},
+                working_directory=_workspace_dir(),
+            )
+            if decision.decision != "allow":
+                return format_permission_response(decision, approval_request=approval_request)
+
+            if target.is_dir():
                 if recursive:
                     shutil.rmtree(target)
                 else:
                     target.rmdir()
+                record_tool_result(
+                    "delete_path",
+                    decision,
+                    result="succeeded",
+                    path=str(target),
+                )
                 return f"Deleted folder: {target}"
 
             target.unlink()
+            record_tool_result(
+                "delete_path",
+                decision,
+                result="succeeded",
+                path=str(target),
+            )
             return f"Deleted file: {target}"
         except Exception as e:
+            if "decision" in locals():
+                record_tool_result(
+                    "delete_path",
+                    decision,
+                    result=f"error:{e.__class__.__name__}",
+                    path=path,
+                )
             return f"Error deleting path: {str(e)}"
 
     @mcp.tool()
@@ -471,7 +561,29 @@ def register(mcp):
             file_path = workspace_path(filename)
             if not os.path.exists(file_path):
                 return f"File not found in workspace: {filename}"
+
+            decision, approval_request = authorize_tool_call(
+                "delete_workspace_file",
+                {"filename": filename},
+                working_directory=_workspace_dir(),
+            )
+            if decision.decision != "allow":
+                return format_permission_response(decision, approval_request=approval_request)
+
             os.remove(file_path)
+            record_tool_result(
+                "delete_workspace_file",
+                decision,
+                result="succeeded",
+                path=str(file_path),
+            )
             return f"Deleted '{filename}' from workspace."
         except Exception as e:
+            if "decision" in locals():
+                record_tool_result(
+                    "delete_workspace_file",
+                    decision,
+                    result=f"error:{e.__class__.__name__}",
+                    path=filename,
+                )
             return f"Error deleting file: {str(e)}"

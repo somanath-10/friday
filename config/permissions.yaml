@@ -1,0 +1,69 @@
+mode: local_permission_based
+
+desktop:
+  enabled: true
+  inspect_screen: true
+  click: true
+  type: true
+  hotkeys: true
+  ask_before_password_fields: true
+
+apps:
+  allow_open_any_app: true
+  allow_close_apps: true
+  ask_before_force_quit: true
+
+filesystem:
+  enabled: true
+  allowed_roots:
+    - "~/Desktop"
+    - "~/Documents"
+    - "~/Downloads"
+    - "~/Workspace"
+    - "./workspace"
+  protected_paths:
+    - "~/.ssh"
+    - "~/.aws"
+    - "~/.config"
+    - ".env"
+    - "C:/Windows"
+    - "C:/Program Files"
+    - "/etc"
+    - "/System"
+  ask_before_delete: true
+  ask_before_overwrite: true
+  backup_before_edit: true
+  preview_bulk_operations: true
+
+browser:
+  enabled: true
+  use_isolated_profile: true
+  allow_main_profile: false
+  ask_before_submit_forms: true
+  ask_before_payment: true
+  ask_before_sending_messages: true
+  ask_before_downloading_executables: true
+
+shell:
+  enabled: true
+  allow_readonly_commands: true
+  ask_before_install: true
+  ask_before_git_push: true
+  ask_before_admin: true
+  block_dangerous_commands: true
+  timeout_seconds: 60
+
+voice:
+  enabled: true
+  push_to_talk: true
+  wake_word: false
+  save_transcripts: true
+
+memory:
+  enabled: true
+  save_action_traces: true
+  save_user_preferences: true
+
+admin:
+  allow_elevation: ask
+  remember_admin_permission_for_minutes: 10

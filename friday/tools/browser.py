@@ -19,6 +19,12 @@ from urllib.parse import urljoin
 
 import httpx
 
+from friday.core.permissions import (
+    authorize_tool_call,
+    format_permission_response,
+    record_tool_result,
+)
+
 try:
     from playwright.async_api import async_playwright
 except ImportError:
@@ -621,6 +627,51 @@ async def _type_interactive_index(page, index: int, text: str, press_enter: bool
     return result if isinstance(result, dict) else {"ok": False, "message": "Unexpected browser result."}
 
 
+async def _peek_typable_index(page, index: int) -> dict:
+    script = r"""([targetIndex]) => {
+  const isVisible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 &&
+      style.visibility !== 'hidden' &&
+      style.display !== 'none';
+  };
+
+  const selectors = [
+    'input',
+    'textarea',
+    'select',
+    '[contenteditable="true"]',
+    '[tabindex]'
+  ];
+
+  const candidates = Array.from(document.querySelectorAll(selectors.join(','))).filter(isVisible);
+  const el = candidates[targetIndex - 1];
+  if (!el) {
+    return { ok: false, message: `No typable element at index ${targetIndex}.`, total: candidates.length };
+  }
+
+  const label = (
+    el.innerText ||
+    el.getAttribute('aria-label') ||
+    el.getAttribute('placeholder') ||
+    el.getAttribute('title') ||
+    el.getAttribute('name') ||
+    el.getAttribute('value') ||
+    ''
+  ).replace(/\s+/g, ' ').trim().slice(0, 160);
+
+  return {
+    ok: true,
+    tag: el.tagName.toLowerCase(),
+    type: (el.getAttribute('type') || '').slice(0, 60),
+    label
+  };
+}"""
+    result = await page.evaluate(script, [index])
+    return result if isinstance(result, dict) else {"ok": False, "message": "Unexpected browser result."}
+
+
 def register(mcp):
     @mcp.tool()
     async def browser_navigate(url: str) -> str:
@@ -794,13 +845,64 @@ def register(mcp):
                 return "HTTP fallback does not support form typing yet. Use Playwright mode for live form interaction."
 
             page = await _get_page()
+            preview = await _peek_typable_index(page, index)
+            if not preview.get("ok"):
+                return preview.get("message") or f"Could not inspect browser element [{index}]."
+
+            decision, approval_request = authorize_tool_call(
+                "browser_type_index",
+                {
+                    "index": index,
+                    "text": text,
+                    "press_enter": press_enter,
+                    "current_url": page.url,
+                    "element_label": preview.get("label") or f"indexed element [{index}]",
+                },
+            )
+            if decision.decision != "allow":
+                return format_permission_response(decision, approval_request=approval_request)
+
             result = await _type_interactive_index(page, index, text, press_enter)
             if result.get("ok"):
                 label = result.get("label") or "(unlabeled)"
                 tail = " and pressed Enter." if press_enter else "."
+                record_tool_result(
+                    "browser_type_index",
+                    decision,
+                    result="succeeded",
+                    domain=decision.domain,
+                    metadata={
+                        **decision.metadata,
+                        "index": index,
+                        "press_enter": press_enter,
+                    },
+                )
                 return f"Typed into browser element [{index}] {result.get('tag', '?')} :: {label}{tail}"
+            record_tool_result(
+                "browser_type_index",
+                decision,
+                result="failed",
+                domain=decision.domain,
+                metadata={
+                    **decision.metadata,
+                    "index": index,
+                    "press_enter": press_enter,
+                },
+            )
             return result.get("message") or f"Could not type into browser element [{index}]."
         except Exception as e:
+            if "decision" in locals():
+                record_tool_result(
+                    "browser_type_index",
+                    decision,
+                    result=f"error:{e.__class__.__name__}",
+                    domain=decision.domain,
+                    metadata={
+                        **decision.metadata,
+                        "index": index,
+                        "press_enter": press_enter,
+                    },
+                )
             return f"Error typing into indexed browser element: {e}"
 
     @mcp.tool()
@@ -845,9 +947,32 @@ def register(mcp):
             if _browser_backend == "http":
                 return "HTTP fallback does not support keyboard input."
             page = await _get_page()
-            await page.keyboard.press(key.strip())
-            return f"Pressed browser key '{key.strip()}'."
+            normalized_key = key.strip()
+            decision, approval_request = authorize_tool_call(
+                "browser_press_key",
+                {"key": normalized_key, "current_url": page.url},
+            )
+            if decision.decision != "allow":
+                return format_permission_response(decision, approval_request=approval_request)
+
+            await page.keyboard.press(normalized_key)
+            record_tool_result(
+                "browser_press_key",
+                decision,
+                result="succeeded",
+                domain=decision.domain,
+                metadata={**decision.metadata, "key": normalized_key},
+            )
+            return f"Pressed browser key '{normalized_key}'."
         except Exception as e:
+            if "decision" in locals():
+                record_tool_result(
+                    "browser_press_key",
+                    decision,
+                    result=f"error:{e.__class__.__name__}",
+                    domain=decision.domain,
+                    metadata={**decision.metadata, "key": key.strip()},
+                )
             return f"Error pressing browser key: {e}"
 
     @mcp.tool()

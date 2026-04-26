@@ -138,6 +138,19 @@ poetry.toml
 
 # FRIDAY healthcheck scratch dirs
 workspace/friday-health-*/
+workspace/.pytest_runtime/
+workspace/logs/
+
+# Local test scratch dirs
+.pytest_tmp/
+.pytest_tmp_phase1/
+
+# Local tool caches / agent metadata
+.uv-cache/
+.claude/
+
+# OS cruft
+.DS_Store
 
 # LSP config files
 pyrightconfig.json

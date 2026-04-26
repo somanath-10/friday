@@ -16,11 +16,13 @@ import importlib
 import importlib.util
 import json
 import os
+import platform
 import re
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -155,13 +157,21 @@ def _truncate_detail(text: str, limit: int = 280) -> str:
     return stripped[: limit - 20] + "... [truncated]"
 
 
-def _stop_subprocess(process: subprocess.Popen[bytes]) -> tuple[str, str]:
+def _stop_process(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is None:
         process.terminate()
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+def _stop_subprocess(process: subprocess.Popen[bytes]) -> tuple[str, str]:
+    _stop_process(process)
 
     try:
         stdout, stderr = process.communicate(timeout=2)
@@ -173,6 +183,42 @@ def _stop_subprocess(process: subprocess.Popen[bytes]) -> tuple[str, str]:
         _truncate_detail(decode_subprocess_text(stdout)),
         _truncate_detail(decode_subprocess_text(stderr)),
     )
+
+
+def _read_temp_output(handle: Any) -> str:
+    if handle is None:
+        return ""
+
+    try:
+        handle.flush()
+    except Exception:
+        pass
+
+    try:
+        handle.seek(0)
+        data = handle.read()
+    except Exception:
+        return ""
+
+    if isinstance(data, str):
+        return _truncate_detail(data)
+    return _truncate_detail(decode_subprocess_text(data))
+
+
+def _stop_process_with_output(
+    process: subprocess.Popen[bytes],
+    *,
+    stdout_handle: Any = None,
+    stderr_handle: Any = None,
+) -> tuple[str, str]:
+    _stop_process(process)
+
+    stdout = _read_temp_output(stdout_handle)
+    stderr = _read_temp_output(stderr_handle)
+    if stdout or stderr:
+        return stdout, stderr
+
+    return _stop_subprocess(process)
 
 
 async def _call_text(mcp: Any, tool_name: str, args: dict[str, Any] | None = None) -> str:
@@ -211,10 +257,85 @@ class _LocalPageHandler(BaseHTTPRequestHandler):
         return
 
 
+def _desktop_permission_results() -> list[CheckResult]:
+    results: list[CheckResult] = []
+    system = platform.system()
+
+    if system == "Darwin":
+        try:
+            from friday.tools.diagnostics import (
+                _check_macos_accessibility,
+                _check_macos_screen_recording,
+            )
+        except Exception as exc:
+            _record(
+                results,
+                "config.desktop_permissions",
+                WARN,
+                f"Could not load macOS permission diagnostics: {exc}",
+            )
+            return results
+
+        screen = _check_macos_screen_recording()
+        accessibility = _check_macos_accessibility()
+        _record(
+            results,
+            "config.desktop.screen_recording",
+            PASS if screen.get("status") == "Granted" else WARN,
+            screen.get("message", screen.get("status", "Unknown")),
+        )
+        _record(
+            results,
+            "config.desktop.accessibility",
+            PASS if accessibility.get("status") == "Granted" else WARN,
+            accessibility.get("message", accessibility.get("status", "Unknown")),
+        )
+        return results
+
+    if system == "Windows":
+        _record(
+            results,
+            "config.desktop_permissions",
+            PASS,
+            "Windows desktop control usually works without separate OS permission prompts. Administrator-only actions still need an elevated terminal.",
+        )
+        return results
+
+    _record(
+        results,
+        "config.desktop_permissions",
+        WARN,
+        "Linux desktop automation depends on display-server policy and helper tools such as scrot, wmctrl, or xdotool.",
+    )
+    return results
+
+
 def _build_env_readiness() -> list[CheckResult]:
     results: list[CheckResult] = []
 
     status = build_runtime_status()
+    diagnostics = status.get("diagnostics", {})
+    transport = diagnostics.get("transport", {})
+    tool_registration = diagnostics.get("tool_registration", {})
+
+    _record(
+        results,
+        "config.openai",
+        PASS if status["openai_configured"] else WARN,
+        (
+            "OPENAI_API_KEY is configured for local browser chat."
+            if status["openai_configured"]
+            else "OPENAI_API_KEY is missing. Local browser chat and browser audio transcription will stay offline."
+        ),
+    )
+
+    workspace_status = PASS if status.get("workspace_writable") else WARN
+    workspace_detail = (
+        f"Workspace is writable: {status['workspace_path']}"
+        if status.get("workspace_writable")
+        else f"Workspace is not writable: {status.get('workspace_error') or status['workspace_path']}"
+    )
+    _record(results, "config.workspace", workspace_status, workspace_detail)
 
     if status["app_ready"]:
         _record(
@@ -229,6 +350,22 @@ def _build_env_readiness() -> list[CheckResult]:
             "config.local_browser",
             WARN,
             "; ".join(status["setup_issues"]),
+        )
+
+    if transport.get("conflicting_override"):
+        _record(
+            results,
+            "config.mcp_server_url",
+            WARN,
+            "MCP_SERVER_URL overrides the local host/port settings. The browser UI now uses the current local request URL to avoid stale local-browser routing.",
+        )
+    else:
+        configured_url = transport.get("configured_mcp_server_url") or transport.get("effective_local_mcp_server_url")
+        _record(
+            results,
+            "config.mcp_server_url",
+            PASS,
+            f"Local MCP endpoint: {configured_url}",
         )
 
     if status["legacy_livekit_configured"]:
@@ -272,6 +409,23 @@ def _build_env_readiness() -> list[CheckResult]:
         else "Desktop control prerequisites are incomplete. Run the desktop healthcheck or permission diagnostics for details."
     )
     _record(results, "config.desktop_control", desktop_status, desktop_detail)
+    results.extend(_desktop_permission_results())
+
+    if tool_registration.get("ready"):
+        _record(
+            results,
+            "config.tool_registration",
+            PASS,
+            f"Registered {len(tool_registration.get('registered_modules', []))} enabled tool modules.",
+        )
+    else:
+        issues = tool_registration.get("issues") or ["Tool registration status is incomplete."]
+        _record(
+            results,
+            "config.tool_registration",
+            WARN,
+            "; ".join(issues),
+        )
 
     if os.getenv("BRAVE_API_KEY"):
         _record(results, "config.brave_search", PASS, "BRAVE_API_KEY is present.")
@@ -448,7 +602,12 @@ async def _run_offline_tool_checks(server_module: Any, repo_root: Path, results:
     await expect_text("tool.search_in_files", "search_in_files", {"directory": ".", "keyword": "hello demo"}, lambda output: "demo.txt" in output)
     await expect_text("tool.copy_path", "copy_path", {"source_path": "demo.txt", "destination_path": "copies/demo_copy.txt"}, lambda output: "Copied file" in output)
     await expect_text("tool.move_path", "move_path", {"source_path": "copies/demo_copy.txt", "destination_path": "moved/demo_final.txt"}, lambda output: "Moved path" in output)
-    await expect_text("tool.delete_path", "delete_path", {"path": "moved/demo_final.txt"}, lambda output: "Deleted file" in output)
+    await expect_text(
+        "tool.delete_path",
+        "delete_path",
+        {"path": "moved/demo_final.txt"},
+        lambda output: "Deleted file" in output or "[Approval Required]" in output,
+    )
     await expect_text("tool.search_local_apps", "search_local_apps", {"query": "edge"}, _nonempty_success)
     await expect_text("tool.list_chrome_profiles", "list_chrome_profiles", {}, _nonempty_success)
     await expect_text("tool.inspect_desktop_screen", "inspect_desktop_screen", {"question": "What is visible right now?"}, lambda output: "Desktop screenshot:" in output or "Error inspecting desktop screen" not in output)
@@ -688,48 +847,93 @@ def _server_startup_check(repo_root: Path) -> CheckResult:
     env["MCP_SERVER_URL"] = ""
     env["FRIDAY_BROWSER_HEADLESS"] = "1"
 
-    process = subprocess.Popen(
-        [sys.executable, "server.py"],
-        cwd=repo_root,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=False,
-    )
-    output_snippets: tuple[str, str] | None = None
+    with tempfile.TemporaryFile() as stdout_handle, tempfile.TemporaryFile() as stderr_handle:
+        process = subprocess.Popen(
+            [sys.executable, "server.py"],
+            cwd=repo_root,
+            env=env,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            text=False,
+        )
+        output_snippets: tuple[str, str] | None = None
 
-    try:
-        html = _wait_for_url(f"http://127.0.0.1:{port}/")
-        status_payload = _wait_for_url(f"http://127.0.0.1:{port}/status")
-        status = json.loads(status_payload)
+        try:
+            html = _wait_for_url(f"http://127.0.0.1:{port}/")
+            status_payload = _wait_for_url(f"http://127.0.0.1:{port}/status")
+            status = json.loads(status_payload)
 
-        if "FRIDAY" not in html.upper() and "Friday" not in html:
-            return CheckResult("server.startup", FAIL, "Server responded, but the local UI HTML did not look correct.")
+            required_keys = {
+                "app_ready",
+                "server_name",
+                "mode",
+                "host",
+                "port",
+                "workspace_path",
+                "python_version",
+                "os",
+                "llm_provider",
+                "llm_model",
+                "openai_configured",
+                "voice_configured",
+                "browser_automation_ready",
+                "desktop_control_ready",
+                "enabled_tool_modules",
+                "disabled_tool_modules",
+                "setup_issues",
+                "warnings",
+                "next_steps",
+            }
+            missing_keys = sorted(required_keys.difference(status))
 
-        ready = status.get("app_ready", status.get("ready"))
-        detail = f"HTTP UI loaded on port {port}; /status app_ready={ready}."
-        return CheckResult("server.startup", PASS, detail)
-    except Exception as exc:
-        output_snippets = _stop_subprocess(process)
-        stdout, stderr = output_snippets
+            if "FRIDAY" not in html.upper() and "Friday" not in html:
+                return CheckResult("server.startup", FAIL, "Server responded, but the local UI HTML did not look correct.")
 
-        missing_module = ""
-        if isinstance(exc, ModuleNotFoundError) and exc.name:
-            missing_module = exc.name
-        if not missing_module and stderr:
-            missing_module = _module_name_from_error_text(stderr)
+            if missing_keys:
+                return CheckResult(
+                    "server.startup",
+                    FAIL,
+                    "Server responded, but /status is missing required fields: "
+                    + ", ".join(missing_keys),
+                )
 
-        detail = f"Startup smoke test failed: {exc}"
-        if missing_module:
-            detail += f" | {_missing_dependency_detail(missing_module)}"
-        if stderr:
-            detail += f" | stderr: {stderr}"
-        if stdout:
-            detail += f" | stdout: {stdout}"
-        return CheckResult("server.startup", FAIL, detail)
-    finally:
-        if output_snippets is None:
-            _stop_subprocess(process)
+            ready = status.get("app_ready", status.get("ready"))
+            detail = (
+                f"HTTP UI loaded on port {port}; "
+                f"/status mode={status.get('mode')} app_ready={ready}; "
+                f"warnings={len(status.get('warnings', []))}; "
+                f"setup_issues={len(status.get('setup_issues', []))}."
+            )
+            return CheckResult("server.startup", PASS, detail)
+        except Exception as exc:
+            output_snippets = _stop_process_with_output(
+                process,
+                stdout_handle=stdout_handle,
+                stderr_handle=stderr_handle,
+            )
+            stdout, stderr = output_snippets
+
+            missing_module = ""
+            if isinstance(exc, ModuleNotFoundError) and exc.name:
+                missing_module = exc.name
+            if not missing_module and stderr:
+                missing_module = _module_name_from_error_text(stderr)
+
+            detail = f"Startup smoke test failed: {exc}"
+            if missing_module:
+                detail += f" | {_missing_dependency_detail(missing_module)}"
+            if stderr:
+                detail += f" | stderr: {stderr}"
+            if stdout:
+                detail += f" | stdout: {stdout}"
+            return CheckResult("server.startup", FAIL, detail)
+        finally:
+            if output_snippets is None:
+                _stop_process_with_output(
+                    process,
+                    stdout_handle=stdout_handle,
+                    stderr_handle=stderr_handle,
+                )
 
 
 async def _collect_results() -> list[CheckResult]:

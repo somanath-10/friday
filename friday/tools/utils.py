@@ -10,6 +10,11 @@ import sys
 import base64
 import uuid
 
+from friday.core.permissions import (
+    authorize_tool_call,
+    format_permission_response,
+    record_tool_result,
+)
 from friday.path_utils import resolve_user_path, workspace_dir
 from friday.tools.error_handling import safe_tool
 
@@ -122,6 +127,14 @@ def register(mcp):
         Write content to a file at any path. Creates parent directories if needed.
         Use this to save code, notes, configurations, reports, or any content to disk.
         """
+        decision, approval_request = authorize_tool_call(
+            "write_file",
+            {"file_path": file_path},
+            working_directory=str(workspace_dir()),
+        )
+        if decision.decision != "allow":
+            return format_permission_response(decision, approval_request=approval_request)
+
         try:
             resolved_path = resolve_user_path(file_path)
             directory = os.path.dirname(resolved_path)
@@ -131,8 +144,21 @@ def register(mcp):
             with open(resolved_path, 'w', encoding='utf-8') as f:
                 f.write(content)
             size_kb = len(content.encode('utf-8')) / 1024
+            record_tool_result(
+                "write_file",
+                decision,
+                result="succeeded",
+                path=str(resolved_path),
+                metadata={**decision.metadata, "size_bytes": len(content.encode('utf-8'))},
+            )
             return f"Written {size_kb:.2f} KB to: {resolved_path}"
-        except Exception:
+        except Exception as exc:
+            record_tool_result(
+                "write_file",
+                decision,
+                result=f"error:{exc.__class__.__name__}",
+                path=file_path,
+            )
             raise
 
     @mcp.tool()
@@ -141,6 +167,14 @@ def register(mcp):
         Install a Python package using pip (or uv pip). Use this before running code that requires
         a third-party library.
         """
+        decision, approval_request = authorize_tool_call(
+            "install_package",
+            {"package_name": package_name},
+            working_directory=str(workspace_dir()),
+        )
+        if decision.decision != "allow":
+            return format_permission_response(decision, approval_request=approval_request)
+
         try:
             # Prefer uv pip install into the current venv, then fall back to pip
             for cmd in [
@@ -151,12 +185,38 @@ def register(mcp):
                     cmd, capture_output=True, text=True, timeout=120
                 )
                 if result.returncode == 0:
+                    record_tool_result(
+                        "install_package",
+                        decision,
+                        result="succeeded",
+                        command=" ".join(cmd),
+                        metadata={**decision.metadata, "package_name": package_name},
+                    )
                     return f"Successfully installed into .venv: {package_name}"
 
+            record_tool_result(
+                "install_package",
+                decision,
+                result=f"failed_exit_{result.returncode}",
+                command=" ".join(cmd),
+                metadata={**decision.metadata, "package_name": package_name},
+            )
             return f"Failed to install {package_name}: {result.stderr.strip()}"
         except subprocess.TimeoutExpired:
+            record_tool_result(
+                "install_package",
+                decision,
+                result="timeout",
+                metadata={**decision.metadata, "package_name": package_name},
+            )
             return f"Installation of {package_name} timed out (120s)."
         except Exception as e:
+            record_tool_result(
+                "install_package",
+                decision,
+                result=f"error:{e.__class__.__name__}",
+                metadata={**decision.metadata, "package_name": package_name},
+            )
             return f"Error installing package: {str(e)}"
 
     @mcp.tool()
@@ -169,6 +229,13 @@ def register(mcp):
         """
         effective_timeout = timeout if timeout > 0 else SHELL_EXEC_TIMEOUT
         workspace = workspace_dir()
+        decision, approval_request = authorize_tool_call(
+            "run_shell_command",
+            {"command": command},
+            working_directory=str(workspace),
+        )
+        if decision.decision != "allow":
+            return format_permission_response(decision, approval_request=approval_request)
 
         try:
             result = subprocess.run(
@@ -180,6 +247,18 @@ def register(mcp):
                 cwd=workspace,
             )
 
+            result_status = "succeeded" if result.returncode == 0 else f"failed_exit_{result.returncode}"
+            record_tool_result(
+                "run_shell_command",
+                decision,
+                result=result_status,
+                command=command,
+                metadata={
+                    **decision.metadata,
+                    "exit_code": result.returncode,
+                    "working_directory": str(workspace),
+                },
+            )
             if result.returncode == 0:
                 output = result.stdout.strip()
                 if result.stderr.strip():
@@ -192,8 +271,22 @@ def register(mcp):
                     f"Stderr: {result.stderr.strip()}"
                 )
         except subprocess.TimeoutExpired:
+            record_tool_result(
+                "run_shell_command",
+                decision,
+                result="timeout",
+                command=command,
+                metadata={**decision.metadata, "working_directory": str(workspace)},
+            )
             return f"Error: Command timed out after {effective_timeout}s."
         except Exception as e:
+            record_tool_result(
+                "run_shell_command",
+                decision,
+                result=f"error:{e.__class__.__name__}",
+                command=command,
+                metadata={**decision.metadata, "working_directory": str(workspace)},
+            )
             return f"Error running command: {str(e)}"
 
     @mcp.tool()

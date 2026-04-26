@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv",
     "pyautogui",
     "playwright>=1.40.0",
+    "PyYAML",
     "trafilatura",
 ]
 

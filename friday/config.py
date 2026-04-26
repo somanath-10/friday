@@ -10,6 +10,7 @@ import platform
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
@@ -65,6 +66,33 @@ def _module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
 
+def _canonical_browser_host(host: str | None) -> str:
+    if not host:
+        return "127.0.0.1"
+    if host in {"0.0.0.0", "::", "[::]"}:
+        return "127.0.0.1"
+    return host
+
+
+def _normalize_sse_path(path: str) -> str:
+    normalized = path.strip() or "/sse"
+    return normalized if normalized.startswith("/") else f"/{normalized}"
+
+
+def _canonicalize_url(url: str) -> str:
+    if not url:
+        return ""
+
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return url
+
+    host = _canonical_browser_host(parts.hostname)
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    path = parts.path or _normalize_sse_path(env_str("MCP_SSE_PATH", "/sse"))
+    return urlunsplit((parts.scheme, netloc, path, parts.query, parts.fragment))
+
+
 def _tool_dir() -> Path:
     return Path(__file__).resolve().parent / "tools"
 
@@ -96,6 +124,48 @@ def tool_module_enabled(module_name: str) -> bool:
 
 def enabled_tool_modules() -> list[str]:
     return [module for module in _registerable_tool_modules() if tool_module_enabled(module)]
+
+
+def configured_mcp_server_url() -> str:
+    return _canonicalize_url(env_str("MCP_SERVER_URL"))
+
+
+def effective_local_mcp_server_url() -> str:
+    host = _canonical_browser_host(env_str("MCP_SERVER_HOST", "0.0.0.0") or "0.0.0.0")
+    port = env_int("MCP_SERVER_PORT", 8000)
+    sse_path = _normalize_sse_path(env_str("MCP_SSE_PATH", "/sse"))
+    return f"http://{host}:{port}{sse_path}"
+
+
+def mcp_server_url_conflicts_local_browser() -> bool:
+    configured = configured_mcp_server_url()
+    if not configured:
+        return False
+    return configured != effective_local_mcp_server_url()
+
+
+def tool_registration_status() -> dict[str, Any]:
+    try:
+        from friday.tools import (
+            get_tool_registration_report,
+            preview_tool_registration_report,
+        )
+    except Exception as exc:  # pragma: no cover - defensive import guard
+        return {
+            "attempted": False,
+            "discovered_modules": _registerable_tool_modules(),
+            "enabled_modules": enabled_tool_modules(),
+            "disabled_modules": sorted(disabled_tool_modules()),
+            "registered_modules": [],
+            "failed_modules": {"tool_registry": f"{type(exc).__name__}: {exc}"},
+            "ready": False,
+            "issues": [f"tool_registry: {type(exc).__name__}: {exc}"],
+        }
+
+    report = get_tool_registration_report()
+    if report.get("attempted"):
+        return report
+    return preview_tool_registration_report()
 
 
 def selected_voice_providers() -> dict[str, str]:
@@ -155,6 +225,13 @@ def local_browser_setup_issues() -> list[str]:
     if not workspace_writable:
         issues.append(f"Workspace directory is not writable: {workspace_error}")
 
+    tool_status = tool_registration_status()
+    if tool_status["enabled_modules"] and not tool_status["registered_modules"]:
+        issues.append(
+            "No enabled tool modules were successfully registered. "
+            "Run `uv run friday_healthcheck` for detailed module import errors."
+        )
+
     return issues
 
 
@@ -181,6 +258,7 @@ def startup_warnings() -> list[str]:
     selected_providers = selected_voice_providers()
     workspace_path, _workspace_writable, _workspace_error = _workspace_status()
     configured_port = env_str("MCP_SERVER_PORT", "8000")
+    tool_status = tool_registration_status()
 
     if selected_providers["llm"] != LOCAL_BROWSER_LLM_PROVIDER:
         warnings.append(
@@ -191,6 +269,12 @@ def startup_warnings() -> list[str]:
     if configured_port and not configured_port.isdigit():
         warnings.append(
             f"MCP_SERVER_PORT={configured_port!r} is invalid. FRIDAY will fall back to port 8000."
+        )
+
+    if mcp_server_url_conflicts_local_browser():
+        warnings.append(
+            "MCP_SERVER_URL does not match the local host/port settings. "
+            "The browser UI will use the current local request URL so a stale override does not break local mode."
         )
 
     missing_voice_keys = voice_provider_missing_keys()
@@ -215,6 +299,17 @@ def startup_warnings() -> list[str]:
                 "Playwright browser automation is not ready. "
                 "Install dependencies with `uv sync` and browser binaries with `playwright install chromium`."
             )
+
+    if tool_status["failed_modules"]:
+        failed = ", ".join(
+            f"{module} ({error})"
+            for module, error in sorted(tool_status["failed_modules"].items())
+        )
+        warnings.append(
+            "Some enabled tool modules failed to load at startup: "
+            + failed
+            + "."
+        )
 
     system_name = platform.system()
     if system_name == "Darwin":
@@ -241,6 +336,7 @@ def startup_warnings() -> list[str]:
 
 def next_steps() -> list[str]:
     steps: list[str] = []
+    tool_status = tool_registration_status()
 
     if not openai_configured():
         steps.append("Set OPENAI_API_KEY in `.env`, then restart `uv run friday`.")
@@ -254,6 +350,14 @@ def next_steps() -> list[str]:
         steps.append(
             "If you want the optional `uv run friday_voice` mode, configure the selected STT/LLM/TTS provider keys and LiveKit credentials."
         )
+
+    if mcp_server_url_conflicts_local_browser():
+        steps.append(
+            "Clear or fix `MCP_SERVER_URL` if it points to an old server. Local browser mode now prefers the current server URL."
+        )
+
+    if tool_status["failed_modules"]:
+        steps.append("Run `uv run friday_healthcheck` to inspect failed tool-module imports and optional dependencies.")
 
     if platform.system() in {"Darwin", "Linux"}:
         steps.append("Run `uv run friday_healthcheck --desktop` to validate desktop-control permissions.")
@@ -270,6 +374,7 @@ def build_runtime_status(*, mode: str = LOCAL_BROWSER_MODE) -> dict[str, Any]:
     warnings = startup_warnings()
     enabled_modules = enabled_tool_modules()
     disabled_modules = sorted(disabled_tool_modules())
+    tool_status = tool_registration_status()
 
     status = {
         "app_ready": not issues,
@@ -291,9 +396,47 @@ def build_runtime_status(*, mode: str = LOCAL_BROWSER_MODE) -> dict[str, Any]:
         "desktop_control_ready": desktop_control_ready(),
         "enabled_tool_modules": enabled_modules,
         "disabled_tool_modules": disabled_modules,
+        "tool_registration_ready": tool_status["ready"],
+        "tool_registration_issues": tool_status["issues"],
         "setup_issues": issues,
         "warnings": warnings,
         "next_steps": next_steps(),
+        "diagnostics": {
+            "local_browser": {
+                "provider": local_browser_llm_provider(),
+                "model": local_browser_llm_model(),
+                "openai_required": True,
+                "openai_configured": openai_configured(),
+            },
+            "voice": {
+                "providers": selected_voice_providers(),
+                "missing_keys": voice_provider_missing_keys(),
+                "livekit_configured": livekit_configured(),
+            },
+            "browser_automation": {
+                "tool_enabled": tool_module_enabled("browser"),
+                "playwright_installed": _module_available("playwright"),
+                "ready": browser_automation_ready(),
+            },
+            "desktop_control": {
+                "apps_enabled": tool_module_enabled("apps"),
+                "operator_enabled": tool_module_enabled("operator"),
+                "system_enabled": tool_module_enabled("system"),
+                "pyautogui_installed": _module_available("pyautogui"),
+                "ready": desktop_control_ready(),
+            },
+            "workspace": {
+                "path": workspace_path,
+                "writable": workspace_writable,
+                "error": workspace_error,
+            },
+            "tool_registration": tool_status,
+            "transport": {
+                "configured_mcp_server_url": configured_mcp_server_url(),
+                "effective_local_mcp_server_url": effective_local_mcp_server_url(),
+                "conflicting_override": mcp_server_url_conflicts_local_browser(),
+            },
+        },
         # Compatibility fields used by the current web UI and healthcheck.
         "ready": not issues,
         "issues": issues,
