@@ -99,7 +99,7 @@ def test_verify_step_file_exists(mock_workspace):
         verification_target=str(target),
     )
 
-    result = asyncio.run(verify_step(step, "Written"))
+    result = verify_step(step, "Written")
 
     assert result.passed is True
 

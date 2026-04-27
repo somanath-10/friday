@@ -19,15 +19,11 @@ filesystem:
     - "~/Desktop"
     - "~/Documents"
     - "~/Downloads"
-    - "~/Workspace"
     - "./workspace"
   protected_paths:
     - "~/.ssh"
     - "~/.aws"
     - "~/.config"
-    - ".env"
-    - "C:/Windows"
-    - "C:/Program Files"
     - "/etc"
     - "/System"
   ask_before_delete: true

@@ -1,576 +1,380 @@
 """
-Permission-policy helpers for FRIDAY tool execution.
+Permission decisions for local-first FRIDAY actions.
+
+The checker combines static risk classification with a local permission config.
+It returns explicit allow/ask/block decisions; tools can then refuse execution
+or surface an approval request without guessing.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+import os
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-import os
+from urllib.parse import urlsplit
 
-import yaml
-
-from friday.core.risk import (
-    RiskAssessment,
-    browser_domain,
-    classify_file_operation,
-    classify_shell_command,
-    classify_tool_call,
-    risk_level_label,
-)
+from friday.core.risk import RiskAssessment, RiskLevel, classify_shell_command, classify_tool_call
 from friday.path_utils import resolve_user_path, workspace_dir
-from friday.safety.approval_gate import (
-    ApprovalRequest,
-    format_approval_request,
-    get_approval_gate,
-)
-from friday.safety.audit_log import append_audit_record
 
 
-@dataclass
+DEFAULT_PERMISSIONS: dict[str, Any] = {
+    "mode": "local_permission_based",
+    "desktop": {
+        "enabled": True,
+        "inspect_screen": True,
+        "click": True,
+        "type": True,
+        "hotkeys": True,
+        "ask_before_password_fields": True,
+    },
+    "apps": {
+        "allow_open_any_app": True,
+        "allow_close_apps": True,
+        "ask_before_force_quit": True,
+    },
+    "filesystem": {
+        "enabled": True,
+        "allowed_roots": ["~/Desktop", "~/Documents", "~/Downloads", "./workspace"],
+        "protected_paths": ["~/.ssh", "~/.aws", "~/.config", "/etc", "/System"],
+        "ask_before_delete": True,
+        "ask_before_overwrite": True,
+        "backup_before_edit": True,
+        "preview_bulk_operations": True,
+    },
+    "browser": {
+        "enabled": True,
+        "use_isolated_profile": True,
+        "allow_main_profile": False,
+        "ask_before_submit_forms": True,
+        "ask_before_payment": True,
+        "ask_before_sending_messages": True,
+        "ask_before_downloading_executables": True,
+    },
+    "shell": {
+        "enabled": True,
+        "allow_readonly_commands": True,
+        "ask_before_install": True,
+        "ask_before_git_push": True,
+        "ask_before_admin": True,
+        "block_dangerous_commands": True,
+        "timeout_seconds": 60,
+    },
+    "voice": {
+        "enabled": True,
+        "push_to_talk": True,
+        "wake_word": False,
+        "save_transcripts": True,
+    },
+    "memory": {
+        "enabled": True,
+        "save_action_traces": True,
+        "save_user_preferences": True,
+    },
+    "admin": {
+        "allow_elevation": "ask",
+        "remember_admin_permission_for_minutes": 10,
+    },
+}
+
+
+@dataclass(frozen=True)
 class PermissionDecision:
-    action: str
-    category: str
-    risk_level: int
-    risk_label: str
     decision: str
     reason: str
-    command: str = ""
-    path: str = ""
+    risk_level: RiskLevel
+    risk_label: str
+    category: str
+    action: str
+    subject: str = ""
     domain: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def allowed(self) -> bool:
+        return self.decision == "allow"
+
+    @property
+    def needs_approval(self) -> bool:
+        return self.decision == "ask"
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["risk_level"] = int(self.risk_level)
+        return data
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _default_permissions_config() -> dict[str, Any]:
-    return {
-        "mode": "local_permission_based",
-        "desktop": {
-            "enabled": True,
-            "inspect_screen": True,
-            "click": True,
-            "type": True,
-            "hotkeys": True,
-            "ask_before_password_fields": True,
-        },
-        "apps": {
-            "allow_open_any_app": True,
-            "allow_close_apps": True,
-            "ask_before_force_quit": True,
-        },
-        "filesystem": {
-            "enabled": True,
-            "allowed_roots": [
-                "~/Desktop",
-                "~/Documents",
-                "~/Downloads",
-                "~/Workspace",
-                "./workspace",
-            ],
-            "protected_paths": [
-                "~/.ssh",
-                "~/.aws",
-                "~/.config",
-                ".env",
-                "C:/Windows",
-                "C:/Program Files",
-                "/etc",
-                "/System",
-            ],
-            "ask_before_delete": True,
-            "ask_before_overwrite": True,
-            "backup_before_edit": True,
-            "preview_bulk_operations": True,
-        },
-        "browser": {
-            "enabled": True,
-            "use_isolated_profile": True,
-            "allow_main_profile": False,
-            "ask_before_submit_forms": True,
-            "ask_before_payment": True,
-            "ask_before_sending_messages": True,
-            "ask_before_downloading_executables": True,
-        },
-        "shell": {
-            "enabled": True,
-            "allow_readonly_commands": True,
-            "ask_before_install": True,
-            "ask_before_git_push": True,
-            "ask_before_admin": True,
-            "block_dangerous_commands": True,
-            "timeout_seconds": 60,
-        },
-        "voice": {
-            "enabled": True,
-            "push_to_talk": True,
-            "wake_word": False,
-            "save_transcripts": True,
-        },
-        "memory": {
-            "enabled": True,
-            "save_action_traces": True,
-            "save_user_preferences": True,
-        },
-        "admin": {
-            "allow_elevation": "ask",
-            "remember_admin_permission_for_minutes": 10,
-        },
-    }
+def _config_path() -> Path:
+    configured = os.getenv("FRIDAY_PERMISSIONS_CONFIG", "").strip()
+    if configured:
+        return Path(os.path.expanduser(configured)).resolve()
+    return _repo_root() / "config" / "permissions.yaml"
 
 
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def _merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            merged[key] = _deep_merge(base[key], value)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_dict(merged[key], value)
         else:
             merged[key] = value
     return merged
 
 
-def permissions_config_path() -> Path:
-    configured = os.environ.get("FRIDAY_PERMISSIONS_PATH", "").strip()
-    if configured:
-        path = Path(os.path.expandvars(os.path.expanduser(configured)))
-        if not path.is_absolute():
-            path = _repo_root() / path
-        return path.resolve()
-    return (_repo_root() / "config" / "permissions.yaml").resolve()
+def _parse_scalar(value: str) -> Any:
+    stripped = value.strip()
+    if stripped.lower() in {"true", "false"}:
+        return stripped.lower() == "true"
+    if stripped.lower() in {"null", "none"}:
+        return None
+    if stripped.startswith("[") and stripped.endswith("]"):
+        try:
+            return json.loads(stripped.replace("'", '"'))
+        except json.JSONDecodeError:
+            return stripped
+    try:
+        return int(stripped)
+    except ValueError:
+        return stripped.strip('"').strip("'")
 
 
-def _expand_policy_path(raw_path: str) -> Path:
+def _simple_yaml_load(text: str) -> dict[str, Any]:
+    """Load the subset of YAML used by config/permissions.yaml without a dependency."""
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    last_key_at_indent: dict[int, str] = {}
+    last_parent_at_indent: dict[int, tuple[dict[str, Any], str]] = {}
+
+    for raw_line in text.splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        line = raw_line.strip()
+
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        current = stack[-1][1]
+
+        if line.startswith("- "):
+            parent_items = [
+                (level, parent, key)
+                for level, (parent, key) in last_parent_at_indent.items()
+                if level < indent
+            ]
+            if parent_items:
+                _, parent, key = sorted(parent_items, key=lambda item: item[0])[-1]
+                if not isinstance(parent.get(key), list):
+                    parent[key] = []
+                parent[key].append(_parse_scalar(line[2:]))
+            continue
+
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        if value.strip():
+            current[key] = _parse_scalar(value)
+        else:
+            current[key] = {}
+            stack.append((indent, current[key]))
+            last_key_at_indent[indent] = key
+            last_parent_at_indent[indent] = (current, key)
+
+    return root
+
+
+def load_permissions_config(path: Path | None = None) -> dict[str, Any]:
+    """Load permission config from YAML when present, falling back to defaults."""
+    config_path = path or _config_path()
+    if not config_path.exists():
+        return DEFAULT_PERMISSIONS
+
+    text = config_path.read_text(encoding="utf-8")
+    try:
+        import yaml  # type: ignore
+
+        parsed = yaml.safe_load(text) or {}
+    except Exception:
+        parsed = _simple_yaml_load(text)
+    if not isinstance(parsed, dict):
+        parsed = {}
+    return _merge_dict(DEFAULT_PERMISSIONS, parsed)
+
+
+def _expand_path(raw_path: str) -> Path:
     path = Path(os.path.expandvars(os.path.expanduser(raw_path)))
     if not path.is_absolute():
         path = (_repo_root() / path).resolve()
-    return path.resolve(strict=False)
+    return path.resolve()
 
 
-def load_permission_config() -> dict[str, Any]:
-    config = _default_permissions_config()
-    path = permissions_config_path()
-
-    if path.exists():
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        if not isinstance(loaded, dict):
-            raise ValueError(f"Permission config must be a mapping: {path}")
-        config = _deep_merge(config, loaded)
-
-    filesystem = dict(config.get("filesystem", {}))
-    allowed_roots = [_expand_policy_path(str(item)) for item in filesystem.get("allowed_roots", [])]
-    protected_paths = [_expand_policy_path(str(item)) for item in filesystem.get("protected_paths", [])]
-
-    dynamic_workspace = workspace_dir().resolve()
-    if dynamic_workspace not in allowed_roots:
-        allowed_roots.append(dynamic_workspace)
-
-    filesystem["allowed_roots"] = [str(item) for item in allowed_roots]
-    filesystem["protected_paths"] = [str(item) for item in protected_paths]
-    config["filesystem"] = filesystem
-    config["_config_path"] = str(path)
-    return config
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
 
 
-class PermissionEngine:
-    """Evaluate actions against the loaded permission config."""
+def _protected_path_reason(path_text: str, config: dict[str, Any]) -> str:
+    if not path_text:
+        return ""
+    try:
+        target = resolve_user_path(path_text)
+    except Exception:
+        target = _expand_path(path_text)
+    protected = config.get("filesystem", {}).get("protected_paths", [])
+    for raw_root in protected:
+        root = _expand_path(str(raw_root))
+        if _is_relative_to(target, root):
+            return f"Path is protected: {root}"
+    return ""
 
-    def __init__(self, config: dict[str, Any] | None = None) -> None:
-        self.config = config or load_permission_config()
-        self._approval_gate = get_approval_gate()
 
-    def _allowed_roots(self) -> list[Path]:
-        return [
-            Path(item).resolve(strict=False)
-            for item in self.config.get("filesystem", {}).get("allowed_roots", [])
-        ]
+def _filesystem_allowed(path_text: str, config: dict[str, Any]) -> bool:
+    if not path_text:
+        return True
+    try:
+        target = resolve_user_path(path_text)
+    except Exception:
+        target = _expand_path(path_text)
 
-    def _protected_paths(self) -> list[Path]:
-        return [
-            Path(item).resolve(strict=False)
-            for item in self.config.get("filesystem", {}).get("protected_paths", [])
-        ]
+    roots = config.get("filesystem", {}).get("allowed_roots", [])
+    expanded_roots = [_expand_path(str(root)) for root in roots]
+    expanded_roots.append(workspace_dir())
+    return any(_is_relative_to(target, root) for root in expanded_roots)
 
-    def _path_within(self, target: Path, root: Path) -> bool:
-        try:
-            target.resolve(strict=False).relative_to(root.resolve(strict=False))
-            return True
-        except ValueError:
-            return False
 
-    def _in_allowed_roots(self, target: Path) -> bool:
-        return any(self._path_within(target, root) or target == root for root in self._allowed_roots())
+def permission_for_assessment(
+    action: str,
+    assessment: RiskAssessment,
+    *,
+    subject: str = "",
+    config: dict[str, Any] | None = None,
+) -> PermissionDecision:
+    permissions = config or load_permissions_config()
 
-    def _is_protected_path(self, target: Path) -> bool:
-        return any(self._path_within(target, root) or target == root for root in self._protected_paths())
-
-    def _resolve_tool_path(self, value: str) -> Path:
-        return resolve_user_path(value).resolve(strict=False)
-
-    def _make_decision(
-        self,
-        assessment: RiskAssessment,
-        *,
-        decision: str,
-        reason: str | None = None,
-        command: str = "",
-        path: str = "",
-        domain: str = "",
-        metadata: dict[str, Any] | None = None,
-    ) -> PermissionDecision:
+    if assessment.level >= RiskLevel.DANGEROUS_RESTRICTED:
         return PermissionDecision(
-            action=assessment.action,
-            category=assessment.category,
-            risk_level=assessment.risk_level,
-            risk_label=risk_level_label(assessment.risk_level),
-            decision=decision,
-            reason=reason or assessment.reason,
-            command=command,
-            path=path,
-            domain=domain,
-            metadata=metadata or assessment.details,
-        )
-
-    def evaluate_shell_command(
-        self,
-        command: str,
-        *,
-        tool_name: str,
-        working_directory: str = "",
-    ) -> PermissionDecision:
-        shell_config = self.config.get("shell", {})
-        assessment = classify_shell_command(command)
-
-        if not shell_config.get("enabled", True):
-            return self._make_decision(assessment, decision="block", reason="Shell access is disabled in permissions config.", command=command)
-
-        if assessment.blocked and shell_config.get("block_dangerous_commands", True):
-            return self._make_decision(assessment, decision="block", command=command)
-
-        if assessment.category == "shell.read_only":
-            if shell_config.get("allow_readonly_commands", True):
-                return self._make_decision(assessment, decision="allow", command=command)
-            return self._make_decision(assessment, decision="block", reason="Read-only shell commands are disabled in permissions config.", command=command)
-
-        if tool_name == "execute_shell_command":
-            if self._approval_gate.has_session_approval("shell.host_command"):
-                return self._make_decision(
-                    assessment,
-                    decision="allow",
-                    reason="Session approval is active for host-level shell commands.",
-                    command=command,
-                )
-            return self._make_decision(
-                assessment,
-                decision="ask",
-                reason="Host-level shell commands require explicit approval outside the workspace shell.",
-                command=command,
-                metadata={"working_directory": working_directory or str(workspace_dir())},
-            )
-
-        if assessment.category == "shell.install" and shell_config.get("ask_before_install", True):
-            if self._approval_gate.has_session_approval("shell.install"):
-                return self._make_decision(
-                    assessment,
-                    decision="allow",
-                    reason="Session approval is active for install commands.",
-                    command=command,
-                )
-            return self._make_decision(assessment, decision="ask", command=command)
-
-        if assessment.category == "shell.git_push" and shell_config.get("ask_before_git_push", True):
-            if self._approval_gate.has_session_approval("shell.git_push"):
-                return self._make_decision(
-                    assessment,
-                    decision="allow",
-                    reason="Session approval is active for git push.",
-                    command=command,
-                )
-            return self._make_decision(assessment, decision="ask", command=command)
-
-        if assessment.category in {"shell.admin", "shell.delete", "shell.git_commit"}:
-            if self._approval_gate.has_session_approval(assessment.category):
-                return self._make_decision(
-                    assessment,
-                    decision="allow",
-                    reason="Session approval is active for this shell category.",
-                    command=command,
-                )
-            return self._make_decision(assessment, decision="ask", command=command)
-
-        return self._make_decision(assessment, decision="allow", command=command)
-
-    def evaluate_file_action(
-        self,
-        action: str,
-        *,
-        path_value: str,
-        destination_value: str = "",
-        overwrite: bool = False,
-        recursive: bool = False,
-    ) -> PermissionDecision:
-        filesystem = self.config.get("filesystem", {})
-        if not filesystem.get("enabled", True):
-            assessment = classify_file_operation(action, path=path_value, destination_path=destination_value, overwrite=overwrite, recursive=recursive)
-            return self._make_decision(assessment, decision="block", reason="Filesystem access is disabled in permissions config.")
-
-        target = self._resolve_tool_path(path_value)
-        destination = self._resolve_tool_path(destination_value) if destination_value else None
-
-        assessment = classify_file_operation(
+            "block",
+            assessment.reason,
+            assessment.level,
+            assessment.label,
+            assessment.category,
             action,
-            path=str(target),
-            destination_path=str(destination) if destination else "",
-            overwrite=overwrite,
-            recursive=recursive,
-            target_exists=(destination.exists() if destination else target.exists()),
+            subject,
         )
 
-        paths_to_check = [target]
-        if destination is not None:
-            paths_to_check.append(destination)
+    if assessment.category == "shell" and not permissions.get("shell", {}).get("enabled", True):
+        return PermissionDecision("block", "Shell tools are disabled by permissions config.", assessment.level, assessment.label, "shell", action, subject)
+    if assessment.category == "files" and not permissions.get("filesystem", {}).get("enabled", True):
+        return PermissionDecision("block", "Filesystem tools are disabled by permissions config.", assessment.level, assessment.label, "files", action, subject)
+    if assessment.category == "browser" and not permissions.get("browser", {}).get("enabled", True):
+        return PermissionDecision("block", "Browser tools are disabled by permissions config.", assessment.level, assessment.label, "browser", action, subject)
+    if assessment.category == "desktop" and not permissions.get("desktop", {}).get("enabled", True):
+        return PermissionDecision("block", "Desktop tools are disabled by permissions config.", assessment.level, assessment.label, "desktop", action, subject)
 
-        for candidate in paths_to_check:
-            if self._is_protected_path(candidate):
-                return self._make_decision(
-                    assessment,
-                    decision="block",
-                    reason=f"Path is protected by policy: {candidate}",
-                    path=str(candidate),
-                )
-            if not self._in_allowed_roots(candidate):
-                return self._make_decision(
-                    assessment,
-                    decision="block",
-                    reason=f"Path is outside the allowed roots: {candidate}",
-                    path=str(candidate),
-                )
+    if assessment.category == "files":
+        protected_reason = _protected_path_reason(subject, permissions)
+        if protected_reason:
+            return PermissionDecision("block", protected_reason, RiskLevel.DANGEROUS_RESTRICTED, RiskLevel.DANGEROUS_RESTRICTED.name, "files", action, subject)
+        if not _filesystem_allowed(subject, permissions):
+            return PermissionDecision("ask", "Path is outside configured allowed roots.", assessment.level, assessment.label, "files", action, subject)
 
-        if action in {"delete_path", "delete_workspace_file"}:
-            if target in self._allowed_roots() and recursive:
-                return self._make_decision(
-                    assessment,
-                    decision="block",
-                    reason="Deleting an entire allowed root recursively is blocked by policy.",
-                    path=str(target),
-                )
-            if self._approval_gate.has_session_approval("filesystem.delete"):
-                return self._make_decision(
-                    assessment,
-                    decision="allow",
-                    reason="Session approval is active for file deletion.",
-                    path=str(target),
-                )
-            if filesystem.get("ask_before_delete", True):
-                return self._make_decision(assessment, decision="ask", path=str(target))
+    if assessment.level <= RiskLevel.SAFE_WRITE:
+        return PermissionDecision("allow", assessment.reason, assessment.level, assessment.label, assessment.category, action, subject)
 
-        if assessment.category == "filesystem.overwrite":
-            if self._approval_gate.has_session_approval("filesystem.overwrite"):
-                return self._make_decision(
-                    assessment,
-                    decision="allow",
-                    reason="Session approval is active for file overwrite.",
-                    path=str(destination or target),
-                )
-            if filesystem.get("ask_before_overwrite", True):
-                return self._make_decision(assessment, decision="ask", path=str(destination or target))
+    if assessment.level == RiskLevel.REVERSIBLE_CHANGE:
+        return PermissionDecision("allow", assessment.reason, assessment.level, assessment.label, assessment.category, action, subject)
 
-        return self._make_decision(assessment, decision="allow", path=str(destination or target))
+    return PermissionDecision("ask", assessment.reason, assessment.level, assessment.label, assessment.category, action, subject)
 
-    def evaluate_browser_action(
-        self,
-        action: str,
-        *,
-        url: str = "",
-        element_label: str = "",
-        press_enter: bool = False,
-        text: str = "",
-    ) -> PermissionDecision:
-        browser_config = self.config.get("browser", {})
-        assessment = classify_tool_call(
-            "browser_type_index" if action == "browser_type_index" else action,
-            {
-                "current_url": url,
-                "element_label": element_label,
-                "press_enter": press_enter,
-                "text": text,
-            },
-        )
 
-        if not browser_config.get("enabled", True):
-            return self._make_decision(assessment, decision="block", reason="Browser automation is disabled in permissions config.", domain=browser_domain(url))
+def check_shell_permission(command: str, *, config: dict[str, Any] | None = None) -> PermissionDecision:
+    return permission_for_assessment("shell.command", classify_shell_command(command), subject=command, config=config)
 
-        if assessment.needs_approval:
-            if self._approval_gate.has_session_approval(assessment.category, value=browser_domain(url) or "*"):
-                return self._make_decision(
-                    assessment,
-                    decision="allow",
-                    reason="Session approval is active for this browser action category.",
-                    domain=browser_domain(url),
-                )
-            return self._make_decision(assessment, decision="ask", domain=browser_domain(url))
 
-        return self._make_decision(assessment, decision="allow", domain=browser_domain(url))
+def check_tool_permission(
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    subject: str = "",
+    config: dict[str, Any] | None = None,
+) -> PermissionDecision:
+    assessment = classify_tool_call(tool_name, arguments or {})
+    resolved_subject = subject
+    if not resolved_subject and arguments:
+        resolved_subject = str(arguments.get("path") or arguments.get("file_path") or arguments.get("filename") or arguments.get("command") or "")
+    return permission_for_assessment(tool_name, assessment, subject=resolved_subject, config=config)
 
-    def evaluate_tool_call(
-        self,
-        tool_name: str,
-        params: dict[str, Any],
-        *,
-        working_directory: str = "",
-    ) -> PermissionDecision:
-        payload = params or {}
 
-        if tool_name in {"run_shell_command", "execute_shell_command"}:
-            return self.evaluate_shell_command(
-                str(payload.get("command", "")),
-                tool_name=tool_name,
-                working_directory=working_directory,
-            )
-
-        if tool_name == "install_package":
-            package_name = str(payload.get("package_name", "")).strip()
-            return self.evaluate_shell_command(
-                f"pip install {package_name}".strip(),
-                tool_name=tool_name,
-                working_directory=working_directory,
-            )
-
-        if tool_name == "git_commit":
-            message = str(payload.get("message", "")).strip()
-            command = 'git commit -m "<message>"' if message else "git commit"
-            return self.evaluate_shell_command(command, tool_name=tool_name)
-
-        if tool_name == "git_push":
-            branch = str(payload.get("branch", "")).strip()
-            remote = str(payload.get("remote", "origin")).strip() or "origin"
-            command = f"git push {remote}" + (f" {branch}" if branch else "")
-            return self.evaluate_shell_command(command, tool_name=tool_name)
-
-        if tool_name == "write_file":
-            target = self._resolve_tool_path(str(payload.get("file_path", "")))
-            return self.evaluate_file_action(
-                tool_name,
-                path_value=str(target),
-                overwrite=target.exists(),
-            )
-
-        if tool_name == "copy_path":
-            destination = self._resolve_tool_path(str(payload.get("destination_path", "")))
-            return self.evaluate_file_action(
-                tool_name,
-                path_value=str(payload.get("source_path", "")),
-                destination_value=str(destination),
-                overwrite=bool(payload.get("overwrite", False) or destination.exists()),
-            )
-
-        if tool_name == "move_path":
-            destination = self._resolve_tool_path(str(payload.get("destination_path", "")))
-            return self.evaluate_file_action(
-                tool_name,
-                path_value=str(payload.get("source_path", "")),
-                destination_value=str(destination),
-                overwrite=bool(payload.get("overwrite", False) or destination.exists()),
-            )
-
-        if tool_name == "delete_path":
-            return self.evaluate_file_action(
-                tool_name,
-                path_value=str(payload.get("path", "")),
-                recursive=bool(payload.get("recursive", False)),
-            )
-
-        if tool_name == "delete_workspace_file":
-            return self.evaluate_file_action(
-                tool_name,
-                path_value=str(payload.get("filename", "")),
-            )
-
-        if tool_name == "browser_type_index":
-            return self.evaluate_browser_action(
-                tool_name,
-                url=str(payload.get("current_url", "")),
-                element_label=str(payload.get("element_label", f"indexed element [{payload.get('index', '?')}]")),
-                press_enter=bool(payload.get("press_enter", False)),
-                text=str(payload.get("text", "")),
-            )
-
-        if tool_name == "browser_press_key":
-            key = str(payload.get("key", "")).strip()
-            return self.evaluate_browser_action(
-                tool_name,
-                url=str(payload.get("current_url", "")),
-                element_label=key,
-                press_enter=key.lower() == "enter",
-            )
-
-        assessment = classify_tool_call(tool_name, payload)
-        return self._make_decision(assessment, decision="allow")
+def _extract_domain(arguments: dict[str, Any] | None = None) -> str:
+    if not arguments:
+        return ""
+    raw_url = str(arguments.get("current_url") or arguments.get("url") or "").strip()
+    if not raw_url:
+        return ""
+    return urlsplit(raw_url).hostname or ""
 
 
 def authorize_tool_call(
     tool_name: str,
-    params: dict[str, Any],
+    arguments: dict[str, Any] | None = None,
     *,
-    working_directory: str = "",
-) -> tuple[PermissionDecision, ApprovalRequest | None]:
-    engine = PermissionEngine()
-    decision = engine.evaluate_tool_call(tool_name, params, working_directory=working_directory)
-
-    if decision.decision == "allow":
-        return decision, None
-
-    request: ApprovalRequest | None = None
-    if decision.decision == "ask":
-        request = get_approval_gate().create_request(
-            tool=tool_name,
-            action=decision.action,
-            category=decision.category,
-            risk_level=decision.risk_level,
-            reason=decision.reason,
-            command=decision.command,
-            path=decision.path,
-            domain=decision.domain,
-            metadata=decision.metadata,
-        )
-
-    append_audit_record(
-        tool=tool_name,
-        action=decision.action,
-        decision=decision.decision,
-        risk_level=decision.risk_level,
-        result="approval_required" if decision.decision == "ask" else "blocked_by_policy",
-        command=decision.command,
-        path=decision.path,
-        domain=decision.domain,
-        metadata=decision.metadata,
+    config: dict[str, Any] | None = None,
+) -> tuple[PermissionDecision, Any | None]:
+    """Compatibility wrapper for older tool modules that expect approval payloads."""
+    args = arguments or {}
+    subject = str(
+        args.get("path")
+        or args.get("file_path")
+        or args.get("filename")
+        or args.get("command")
+        or args.get("current_url")
+        or args.get("url")
+        or ""
     )
-    return decision, request
+    decision = check_tool_permission(tool_name, args, subject=subject, config=config)
+    enriched = PermissionDecision(
+        decision.decision,
+        decision.reason,
+        decision.risk_level,
+        decision.risk_label,
+        decision.category,
+        decision.action,
+        decision.subject,
+        domain=_extract_domain(args),
+        metadata=dict(args),
+    )
+    approval_request = None
+    if enriched.decision == "ask":
+        from friday.safety.approval_gate import create_approval_request
+
+        approval_request = create_approval_request(
+            enriched,
+            tool=tool_name,
+            command=str(args.get("command", "")),
+            path=str(args.get("path") or args.get("file_path") or ""),
+            domain=enriched.domain,
+        )
+    return enriched, approval_request
 
 
 def format_permission_response(
     decision: PermissionDecision,
     *,
-    approval_request: ApprovalRequest | None = None,
+    approval_request: Any | None = None,
 ) -> str:
-    if decision.decision == "ask" and approval_request is not None:
-        return format_approval_request(approval_request)
+    if approval_request is not None:
+        from friday.safety.approval_gate import format_approval_required
 
-    header = "[Permission Blocked]" if decision.decision == "block" else "[Permission]"
-    lines = [
-        f"{header} {decision.action}",
-        f"Risk: {decision.risk_level} ({decision.risk_label})",
-        f"Reason: {decision.reason}",
-    ]
-    if decision.command:
-        lines.append(f"Command: {decision.command}")
-    if decision.path:
-        lines.append(f"Path: {decision.path}")
-    if decision.domain:
-        lines.append(f"Domain: {decision.domain}")
-    return "\n".join(lines)
+        return format_approval_required(approval_request)
+    return decision.reason
 
 
 def record_tool_result(
@@ -578,19 +382,20 @@ def record_tool_result(
     decision: PermissionDecision,
     *,
     result: str,
-    command: str = "",
-    path: str = "",
     domain: str = "",
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    from friday.safety.audit_log import append_audit_record
+
     append_audit_record(
-        tool=tool_name,
-        action=decision.action,
+        command=decision.subject or tool_name,
+        intent=decision.category,
+        risk_level=int(decision.risk_level),
         decision=decision.decision,
-        risk_level=decision.risk_level,
+        tool=tool_name,
         result=result,
-        command=command or decision.command,
-        path=path or decision.path,
-        domain=domain or decision.domain,
-        metadata=metadata or decision.metadata,
+        extra={
+            "domain": domain or decision.domain,
+            "metadata": metadata or decision.metadata,
+        },
     )

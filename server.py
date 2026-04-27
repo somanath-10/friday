@@ -13,12 +13,12 @@ from friday.web_ui import register_web_routes
 
 load_dotenv()
 
-# All server identity & bind settings come from env vars
-SERVER_NAME = config.SERVER_NAME
-SERVER_HOST = config.SERVER_HOST
-SERVER_PORT = config.SERVER_PORT
-SERVER_MOUNT_PATH = config.SERVER_MOUNT_PATH
-SERVER_SSE_PATH = config.SERVER_SSE_PATH
+# All server identity & bind settings come from config/env vars.
+SERVER_NAME         = config.SERVER_NAME
+SERVER_HOST         = config.MCP_SERVER_HOST
+SERVER_PORT         = config.MCP_SERVER_PORT
+SERVER_MOUNT_PATH   = config.MCP_MOUNT_PATH
+SERVER_SSE_PATH     = config.MCP_SSE_PATH
 SERVER_INSTRUCTIONS = config.SERVER_INSTRUCTIONS
 
 # Create the MCP server instance — fully dynamic

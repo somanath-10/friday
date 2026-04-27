@@ -1,322 +1,363 @@
 """
-Structured execution for FRIDAY's command pipeline.
+Command pipeline executor.
+
+The executor defaults to dry-run mode so this new structured layer can be wired
+in without taking over the existing local chat behavior.
 """
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable
+import subprocess
+from pathlib import Path
+from typing import Any
 
-from friday.core.events import EventRecorder
+from friday.core.events import EventLog, EventType
 from friday.core.models import (
     ExecutionPlan,
-    IntentRoute,
+    PipelineResult,
     PipelineRunResult,
+    Plan,
     PlanStep,
     StepExecutionResult,
-    VerificationResult,
+    StructuredStepResult,
 )
-from friday.core.permissions import authorize_tool_call, format_permission_response
-from friday.core.planner import build_execution_plan
-from friday.core.recovery import choose_recovery_action
-from friday.core.router import route_user_command
-from friday.core.verifier import verify_step
-from friday.path_utils import workspace_dir
+from friday.core.permissions import permission_for_assessment
+from friday.core.planner import build_execution_plan, create_plan
+from friday.core.recovery import choose_recovery_action, recover_step
+from friday.core.risk import RiskAssessment
+from friday.core.router import route_intent, route_user_command
+from friday.core.verifier import verify_step_sync
+from friday.path_utils import resolve_user_path, workspace_dir
+from friday.safety.audit_log import append_audit_record
+from friday.safety.approval_gate import create_approval_request
 
 
-ToolInvoker = Callable[[str, dict[str, object]], Awaitable[str]]
+def _assessment_from_step(step: PlanStep) -> RiskAssessment:
+    return RiskAssessment(
+        level=step.risk_level,
+        reason=step.description,
+        category=step.executor,
+    )
+
+
+def _dry_run_result(step: PlanStep, decision: str) -> StepExecutionResult:
+    return StepExecutionResult(
+        step_id=step.id,
+        status="dry_run",
+        output=f"Dry run: would execute {step.executor}.{step.action_type} with {step.parameters}",
+        permission_decision=decision,
+        dry_run=True,
+    )
+
+
+def _execute_allowed_step(step: PlanStep, *, goal: str = "") -> StepExecutionResult:
+    try:
+        if step.executor == "desktop":
+            from friday.desktop.runtime import execute as execute_desktop
+
+            desktop_result = execute_desktop(goal, step, dry_run=False)
+            return StepExecutionResult(
+                step.id,
+                "succeeded" if desktop_result.ok else "failed",
+                desktop_result.message,
+                desktop_result.permission_decision,
+                dry_run=False,
+                error="" if desktop_result.ok else desktop_result.message,
+            )
+
+        if step.action_type == "shell_command":
+            command = str(step.parameters.get("command", "")).strip()
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=workspace_dir(),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            output = (result.stdout or "").strip()
+            if result.stderr.strip():
+                output = (output + "\n" if output else "") + result.stderr.strip()
+            return StepExecutionResult(
+                step.id,
+                "succeeded" if result.returncode == 0 else "failed",
+                output or f"Command exited {result.returncode} with no output.",
+                dry_run=False,
+                error="" if result.returncode == 0 else f"exit code {result.returncode}",
+            )
+
+        if step.action_type == "write_file":
+            path_text = str(step.parameters.get("path", ""))
+            content = str(step.parameters.get("content", ""))
+            target = resolve_user_path(path_text)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                return StepExecutionResult(step.id, "blocked", f"Refusing overwrite without explicit approval: {target}", "block", dry_run=False)
+            target.write_text(content, encoding="utf-8")
+            return StepExecutionResult(step.id, "succeeded", f"Wrote file: {target}", dry_run=False)
+
+        if step.action_type == "status":
+            return StepExecutionResult(step.id, "succeeded", f"Workspace: {workspace_dir()}", dry_run=False)
+
+        return StepExecutionResult(
+            step.id,
+            "failed",
+            "",
+            dry_run=False,
+            error=f"No concrete executor is implemented for {step.executor}.{step.action_type}.",
+        )
+    except Exception as exc:
+        return StepExecutionResult(step.id, "failed", "", dry_run=False, error=str(exc))
+
+
+def execute_plan(plan: Plan, *, dry_run: bool = True, event_log: EventLog | None = None) -> PipelineResult:
+    events = event_log or EventLog()
+    step_results: list[StepExecutionResult] = []
+    verification_results = []
+    recovery_results = []
+
+    for step in plan.steps:
+        events.emit(EventType.TOOL_STARTED, f"Starting {step.id}: {step.description}", step=step.to_dict())
+        decision = permission_for_assessment(
+            f"{step.executor}.{step.action_type}",
+            _assessment_from_step(step),
+            subject=str(step.parameters.get("path") or step.parameters.get("command") or step.parameters.get("app_name") or ""),
+        )
+
+        if decision.decision == "ask":
+            approval = create_approval_request(
+                decision,
+                tool=f"{step.executor}.{step.action_type}",
+                command=str(step.parameters.get("command", "")),
+                path=str(step.parameters.get("path", "")),
+            )
+            events.emit(EventType.PERMISSION_REQUIRED, decision.reason, approval=approval.to_dict())
+            result = StepExecutionResult(step.id, "permission_required", approval.action_summary, "ask", dry_run=dry_run)
+        elif decision.decision == "block":
+            events.emit(EventType.PERMISSION_DENIED, decision.reason, step=step.to_dict())
+            result = StepExecutionResult(step.id, "blocked", decision.reason, "block", dry_run=dry_run)
+        elif dry_run:
+            events.emit(EventType.PERMISSION_GRANTED, decision.reason, step=step.to_dict())
+            result = _dry_run_result(step, decision.decision)
+        else:
+            events.emit(EventType.PERMISSION_GRANTED, decision.reason, step=step.to_dict())
+            result = _execute_allowed_step(step, goal=plan.goal)
+
+        step_results.append(result)
+        append_audit_record(
+            command=plan.goal,
+            intent=plan.intent.intent.value,
+            plan=plan.to_dict(),
+            risk_level=int(step.risk_level),
+            decision=result.permission_decision,
+            tool=f"{step.executor}.{step.action_type}",
+            result=result.output or result.error,
+        )
+
+        if result.status in {"succeeded", "dry_run"}:
+            events.emit(EventType.TOOL_SUCCEEDED, f"{step.id} completed.", result=result.to_dict())
+        else:
+            events.emit(EventType.TOOL_FAILED, f"{step.id} failed or paused.", result=result.to_dict())
+
+        verification = verify_step_sync(step, result)
+        verification_results.append(verification)
+        if verification.ok:
+            events.emit(EventType.VERIFICATION_SUCCEEDED, verification.detail, verification=verification.to_dict())
+        else:
+            events.emit(EventType.VERIFICATION_FAILED, verification.detail, verification=verification.to_dict())
+            recovery = recover_step(step, result)
+            recovery_results.append(recovery)
+            if recovery.attempted:
+                events.emit(EventType.RECOVERY_STARTED, recovery.detail, recovery=recovery.to_dict())
+
+    status = "completed"
+    if any(result.status in {"blocked", "permission_required", "failed"} for result in step_results):
+        status = "paused"
+    events.emit(EventType.WORKFLOW_COMPLETED, f"Pipeline {status}.", status=status)
+
+    return PipelineResult(
+        command=plan.goal,
+        plan=plan,
+        events=events.to_list(),
+        step_results=step_results,
+        verification_results=verification_results,
+        recovery_results=recovery_results,
+        status=status,
+    )
+
+
+def run_command_pipeline(user_message: str, *, dry_run: bool = True) -> PipelineResult:
+    events = EventLog()
+    events.emit(EventType.COMMAND_RECEIVED, "Command received.", command=user_message)
+    intent = route_intent(user_message)
+    events.emit(EventType.INTENT_DETECTED, f"Intent detected: {intent.intent.value}", intent=intent.to_dict())
+    plan = create_plan(user_message, intent)
+    events.emit(EventType.PLAN_CREATED, "Plan created.", plan=plan.to_dict())
+    return execute_plan(plan, dry_run=dry_run, event_log=events)
 
 
 class StructuredExecutor:
-    """Executes structured plans with permission checks, verification, and recovery."""
+    """Async compatibility executor used by the local chat bridge and tests."""
 
-    def __init__(self, tool_invoker: ToolInvoker, recorder: EventRecorder | None = None) -> None:
-        self.tool_invoker = tool_invoker
-        self.recorder = recorder or EventRecorder()
-        self.tool_events: list[dict[str, object]] = []
+    def __init__(self, tool_invoker):
+        self._tool_invoker = tool_invoker
 
     async def execute(self, plan: ExecutionPlan) -> PipelineRunResult:
-        self.recorder.emit(
-            "plan_created",
-            "Structured execution plan created.",
-            step_count=len(plan.steps),
-            intent=plan.intent,
-            dry_run=plan.dry_run,
-        )
+        pipeline_events: list[dict[str, Any]] = []
+        tool_events: list[dict[str, Any]] = []
+        step_results: list[StructuredStepResult] = []
 
-        if not plan.supported or not plan.steps:
+        if not plan.supported:
             return PipelineRunResult(
                 handled=False,
                 success=False,
-                reply="The structured pipeline could not build a supported plan for this command.",
+                reply="This request should fall back to the legacy local chat loop.",
                 plan=plan,
-                pipeline_events=self.recorder.as_list(),
-                tool_events=list(self.tool_events),
                 used_legacy_fallback=True,
             )
 
-        step_results: list[StepExecutionResult] = []
         permission_pending = False
-
+        overall_success = True
         for step in plan.steps:
-            if plan.dry_run:
-                self.recorder.emit(
-                    "tool_started",
-                    f"Dry run prepared step {step.id}.",
-                    step_id=step.id,
-                    tool=step.tool_name,
-                )
-                verification = VerificationResult(
-                    passed=True,
-                    detail="Dry run mode skips real execution.",
-                )
-                result = StepExecutionResult(
-                    step_id=step.id,
-                    tool_name=step.tool_name,
-                    ok=True,
-                    output=f"Dry run: would call {step.tool_name} with {step.parameters}",
-                    verification=verification,
-                    attempts=0,
-                )
-                step_results.append(result)
-                self.tool_events.append(
-                    {
-                        "name": step.tool_name,
-                        "ok": True,
-                        "preview": result.output,
-                    }
-                )
-                self.recorder.emit(
-                    "verification_succeeded",
-                    f"Dry run recorded for step {step.id}.",
-                    step_id=step.id,
-                )
-                continue
-
-            decision, approval_request = authorize_tool_call(
-                step.tool_name,
-                step.parameters,
-                working_directory=self._working_directory_for_step(step),
+            pipeline_events.append({"event_type": "tool_started", "name": step.tool_name, "step_id": step.id})
+            decision = permission_for_assessment(
+                step.tool_name or f"{step.executor}.{step.action_type}",
+                _assessment_from_step(step),
+                subject=str(
+                    step.parameters.get("file_path")
+                    or step.parameters.get("path")
+                    or step.parameters.get("command")
+                    or step.parameters.get("app_name")
+                    or ""
+                ),
             )
-            if decision.decision != "allow":
-                permission_pending = decision.decision == "ask"
-                message = format_permission_response(decision, approval_request=approval_request)
-                event_type = "permission_required" if permission_pending else "permission_denied"
-                self.recorder.emit(
-                    event_type,
-                    message,
-                    step_id=step.id,
-                    tool=step.tool_name,
-                    risk_level=decision.risk_level,
-                )
-                self.tool_events.append(
-                    {
-                        "name": step.tool_name,
-                        "ok": False,
-                        "preview": message,
-                    }
-                )
+            if decision.decision == "ask":
+                pipeline_events.append({"event_type": "permission_required", "name": step.tool_name, "step_id": step.id})
+                permission_pending = True
+                overall_success = False
                 step_results.append(
-                    StepExecutionResult(
+                    StructuredStepResult(
                         step_id=step.id,
                         tool_name=step.tool_name,
-                        ok=False,
-                        output=message,
-                        verification=VerificationResult(
-                            passed=permission_pending or decision.decision == "block",
-                            detail="Permission handling completed.",
-                        ),
+                        success=False,
+                        output="[Approval Required] This action needs permission before FRIDAY can continue.",
+                    )
+                )
+                continue
+            if decision.decision == "block":
+                pipeline_events.append({"event_type": "permission_denied", "name": step.tool_name, "step_id": step.id})
+                overall_success = False
+                step_results.append(
+                    StructuredStepResult(
+                        step_id=step.id,
+                        tool_name=step.tool_name,
+                        success=False,
+                        output=decision.reason,
                         error=decision.reason,
                     )
                 )
-                break
+                continue
 
-            executed = await self._execute_step(step, attempts=1)
-            step_results.append(executed)
-            if not executed.ok and step.allow_recovery:
-                recovered = await self._attempt_recovery(step, executed)
-                if recovered is not None:
-                    step_results[-1] = recovered
-                    executed = recovered
+            if plan.dry_run:
+                pipeline_events.append({"event_type": "tool_succeeded", "name": step.tool_name, "step_id": step.id})
+                step_results.append(
+                    StructuredStepResult(
+                        step_id=step.id,
+                        tool_name=step.tool_name,
+                        success=True,
+                        output=f"Dry run: would call {step.tool_name}",
+                        verified=True,
+                    )
+                )
+                continue
 
-            if not executed.ok:
-                break
+            output = await self._tool_invoker(step.tool_name, dict(step.parameters))
+            tool_events.append({"name": step.tool_name, "ok": True, "preview": str(output)[:220]})
+            verification = verify_step_sync(step, output)
+            if verification.passed:
+                pipeline_events.append({"event_type": "tool_succeeded", "name": step.tool_name, "step_id": step.id})
+                step_results.append(
+                    StructuredStepResult(
+                        step_id=step.id,
+                        tool_name=step.tool_name,
+                        success=True,
+                        output=str(output),
+                        verified=True,
+                    )
+                )
+                continue
 
-        success = all(result.ok for result in step_results) and bool(step_results)
-        reply = self._build_reply(plan, step_results, permission_pending=permission_pending, success=success)
-        self.recorder.emit(
-            "workflow_completed",
-            "Structured workflow completed." if success else "Structured workflow stopped before completion.",
-            success=success,
-            permission_pending=permission_pending,
-        )
+            recovery = choose_recovery_action(step, str(output), attempts=0)
+            if recovery is not None:
+                pipeline_events.append({"event_type": "recovery_started", "name": recovery.tool_name, "step_id": step.id})
+                recovery_output = await self._tool_invoker(recovery.tool_name, dict(recovery.parameters))
+                tool_events.append({"name": recovery.tool_name, "ok": True, "preview": str(recovery_output)[:220]})
+                if not str(recovery_output).lower().startswith(("error", "failed")):
+                    step_results.append(
+                        StructuredStepResult(
+                            step_id=step.id,
+                            tool_name=step.tool_name,
+                            success=True,
+                            output=str(output),
+                            verified=False,
+                            recovered=True,
+                        )
+                    )
+                    continue
+
+            overall_success = False
+            pipeline_events.append({"event_type": "tool_failed", "name": step.tool_name, "step_id": step.id})
+            step_results.append(
+                StructuredStepResult(
+                    step_id=step.id,
+                    tool_name=step.tool_name,
+                    success=False,
+                    output=str(output),
+                    verified=False,
+                    error=str(output),
+                )
+            )
+
+        if permission_pending:
+            reply = "[Approval Required] One or more steps need your permission before FRIDAY can continue."
+        elif overall_success:
+            reply = "Structured command completed."
+        else:
+            reply = "Structured command could not be completed safely."
+
         return PipelineRunResult(
             handled=True,
-            success=success,
+            success=overall_success and not permission_pending,
             reply=reply,
             plan=plan,
-            step_results=step_results,
-            tool_events=list(self.tool_events),
-            pipeline_events=self.recorder.as_list(),
             permission_pending=permission_pending,
+            tool_events=tool_events,
+            pipeline_events=pipeline_events,
+            step_results=step_results,
         )
 
-    async def _execute_step(self, step: PlanStep, *, attempts: int) -> StepExecutionResult:
-        self.recorder.emit(
-            "tool_started",
-            f"Running step {step.id}.",
-            step_id=step.id,
-            tool=step.tool_name,
-            parameters=step.parameters,
-        )
-        output = await self.tool_invoker(step.tool_name, step.parameters)
-        verification = await verify_step(step, output, tool_invoker=self.tool_invoker)
-        ok = verification.passed
-        event_type = "tool_succeeded" if ok else "tool_failed"
-        self.recorder.emit(
-            event_type,
-            f"Step {step.id} {'passed' if ok else 'failed'}.",
-            step_id=step.id,
-            tool=step.tool_name,
-            verification=verification.detail,
-        )
-        verification_event = "verification_succeeded" if verification.passed else "verification_failed"
-        self.recorder.emit(
-            verification_event,
-            verification.detail,
-            step_id=step.id,
-            tool=step.tool_name,
-        )
-        self.tool_events.append(
-            {
-                "name": step.tool_name,
-                "ok": ok,
-                "preview": output[:220],
-            }
-        )
-        return StepExecutionResult(
-            step_id=step.id,
-            tool_name=step.tool_name,
-            ok=ok,
-            output=output,
-            verification=verification,
-            attempts=attempts,
-            error="" if ok else verification.detail,
-        )
 
-    async def _attempt_recovery(
-        self,
-        step: PlanStep,
-        failed_result: StepExecutionResult,
-    ) -> StepExecutionResult | None:
-        recovery = choose_recovery_action(
-            step,
-            failed_result.output,
-            attempts=failed_result.attempts,
-        )
-        if recovery is None:
-            return None
-
-        self.recorder.emit(
-            "recovery_started",
-            recovery.reason,
-            step_id=step.id,
-            recovery_tool=recovery.tool_name,
-        )
-        recovery_step = PlanStep(
-            id=f"{step.id}_recovery",
-            description=f"Recovery for {step.description}",
-            executor=step.executor,
-            action_type=f"{step.action_type}.recovery",
-            tool_name=recovery.tool_name,
-            parameters=recovery.parameters,
-            expected_result=step.expected_result,
-            risk_level=step.risk_level,
-            needs_approval=False,
-            verification_method="tool_output_nonempty",
-            verification_target=step.verification_target,
-            allow_recovery=False,
-        )
-        recovered = await self._execute_step(recovery_step, attempts=failed_result.attempts + 1)
-        recovered.step_id = step.id
-        recovered.recovered = recovered.ok
-        return recovered
-
-    def _working_directory_for_step(self, step: PlanStep) -> str:
-        if step.tool_name == "run_shell_command":
-            return str(workspace_dir())
-        repo_path = step.parameters.get("repo_path")
-        if repo_path:
-            return str(repo_path)
-        return str(workspace_dir())
-
-    def _build_reply(
-        self,
-        plan: ExecutionPlan,
-        step_results: list[StepExecutionResult],
-        *,
-        permission_pending: bool,
-        success: bool,
-    ) -> str:
-        if permission_pending and step_results:
-            return step_results[-1].output
-        if plan.dry_run:
-            return (
-                f"Dry run ready for a {plan.intent} command with {len(plan.steps)} planned step(s). "
-                f"First step: {plan.steps[0].description}."
-            )
-        if success:
-            completed = ", ".join(result.tool_name for result in step_results)
-            return f"Completed the structured {plan.intent} workflow and verified: {completed}."
-        if step_results:
-            failed = step_results[-1]
-            return (
-                f"The structured {plan.intent} workflow stopped at step '{failed.step_id}'. "
-                f"Reason: {failed.error or failed.output}"
-            )
-        return "The structured workflow did not execute any steps."
-
-
-async def run_structured_command(
-    message: str,
-    tool_invoker: ToolInvoker,
-    *,
-    dry_run: bool = False,
-) -> PipelineRunResult:
-    """Route, plan, execute, and verify a command using the structured pipeline."""
-    recorder = EventRecorder()
-    recorder.emit("command_received", "Structured command received.", command=message)
-    route = route_user_command(message)
-    recorder.emit(
-        "intent_detected",
-        f"Detected intent '{route.intent}'.",
-        intent=route.intent,
-        confidence=route.confidence,
-        likely_risk=route.likely_risk,
-    )
-
-    if route.should_use_legacy_fallback:
-        return PipelineRunResult(
-            handled=False,
-            success=False,
-            reply="The command should fall back to the legacy local chat loop.",
-            route=route,
-            pipeline_events=recorder.as_list(),
-            used_legacy_fallback=True,
-        )
-
-    plan = build_execution_plan(message, route, dry_run=dry_run)
+async def run_structured_command(user_message: str, tool_invoker, dry_run: bool = False) -> PipelineRunResult:
+    route = route_user_command(user_message)
+    plan = build_execution_plan(user_message, route)
     if not plan.supported:
         return PipelineRunResult(
             handled=False,
             success=False,
-            reply="The structured pipeline could not support this command yet.",
-            route=route,
+            reply="This request should fall back to the legacy local chat loop.",
             plan=plan,
-            pipeline_events=recorder.as_list(),
             used_legacy_fallback=True,
         )
 
-    executor = StructuredExecutor(tool_invoker, recorder=recorder)
-    result = await executor.execute(plan)
-    result.route = route
-    return result
+    plan = ExecutionPlan(
+        goal=plan.goal,
+        intent=plan.intent,
+        confidence=plan.confidence,
+        required_capabilities=plan.required_capabilities,
+        suggested_executor=plan.suggested_executor,
+        steps=plan.steps,
+        supported=plan.supported,
+        dry_run=dry_run,
+        notes=plan.notes,
+    )
+    return await StructuredExecutor(tool_invoker).execute(plan)

@@ -1,63 +1,72 @@
 """
-Recovery helpers for FRIDAY's structured command pipeline.
+Minimal safe recovery policy for failed pipeline steps.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Awaitable, Callable
-from pathlib import Path
-
-from friday.core.models import PlanStep
+from friday.core.models import PlanStep, RecoveryAction, RecoveryResult, StepExecutionResult
 
 
-ToolInvoker = Callable[[str, dict[str, object]], Awaitable[str]]
+def recover_step(step: PlanStep, result: StepExecutionResult) -> RecoveryResult:
+    if result.status in {"permission_required", "blocked"}:
+        return RecoveryResult(
+            step_id=step.id,
+            attempted=False,
+            recovered=False,
+            detail="Recovery skipped because the step needs user permission or is blocked by policy.",
+        )
+
+    if result.status == "dry_run":
+        return RecoveryResult(
+            step_id=step.id,
+            attempted=False,
+            recovered=True,
+            detail="Dry-run step does not need recovery.",
+        )
+
+    if result.status == "succeeded":
+        return RecoveryResult(
+            step_id=step.id,
+            attempted=False,
+            recovered=True,
+            detail="Step succeeded; recovery was not needed.",
+        )
+
+    return RecoveryResult(
+        step_id=step.id,
+        attempted=True,
+        recovered=False,
+        detail=f"Safe automatic retry is not available for {step.executor}.{step.action_type}: {result.error or result.output}",
+    )
 
 
-@dataclass
-class RecoveryAction:
-    tool_name: str
-    parameters: dict[str, object]
-    reason: str
-
-
-def _basename(value: object) -> str:
-    return Path(str(value or "")).name or str(value or "")
-
-
-def choose_recovery_action(step: PlanStep, output: str, *, attempts: int) -> RecoveryAction | None:
-    """Return a retry or fallback action when a step fails safely."""
-    lowered = (output or "").lower()
+def choose_recovery_action(
+    step: PlanStep,
+    error_text: str,
+    *,
+    attempts: int = 0,
+) -> RecoveryAction | None:
+    """Return a lightweight fallback action for a failed structured step."""
     if attempts >= 2:
         return None
 
-    if "timed out" in lowered and step.risk_level <= 1:
-        return RecoveryAction(
-            tool_name=step.tool_name,
-            parameters=dict(step.parameters),
-            reason="Retrying a low-risk step after a timeout.",
-        )
-
-    if step.tool_name == "open_application":
-        return RecoveryAction(
-            tool_name="search_local_apps",
-            parameters={"query": str(step.parameters.get("app_name", ""))},
-            reason="Application launch failed, so search for matching installed apps.",
-        )
-
-    if step.tool_name == "browser_navigate":
+    normalized = error_text.lower()
+    if step.tool_name == "browser_navigate" or step.action_type == "browser.navigate":
         return RecoveryAction(
             tool_name="open_url",
-            parameters={"url": str(step.parameters.get("url", ""))},
-            reason="Browser automation failed, so open the target in the visible browser.",
+            parameters={"url": step.parameters.get("url", "")},
+            reason="Retry navigation by opening the URL directly.",
         )
-
-    if step.tool_name == "list_directory_tree":
-        original_path = str(step.parameters.get("path", ""))
+    if step.tool_name == "open_application" or step.action_type == "desktop.open_app":
         return RecoveryAction(
-            tool_name="search_paths_by_name",
-            parameters={"name": _basename(original_path), "directories_only": True},
-            reason="Directory listing failed, so search for the target path name.",
+            tool_name="search_local_apps",
+            parameters={"query": step.parameters.get("app_name", "")},
+            reason="Search installed apps to find a better local match.",
         )
-
+    if "not found" in normalized and step.verification_target:
+        return RecoveryAction(
+            tool_name="list_open_windows",
+            parameters={"query": step.verification_target},
+            reason="Inspect open windows to verify whether the target is already available.",
+        )
     return None

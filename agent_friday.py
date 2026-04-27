@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.voice import Agent, AgentSession
 from livekit.agents.llm import mcp
+from friday.config import env_int
 
 # Plugins
 from livekit.plugins import google as lk_google, openai as lk_openai, sarvam, silero, deepgram as lk_deepgram
@@ -49,9 +50,9 @@ SARVAM_STT_MODEL    = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
 DEEPGRAM_STT_MODEL    = os.getenv("DEEPGRAM_STT_MODEL", "nova-3")
 DEEPGRAM_STT_LANGUAGE = os.getenv("DEEPGRAM_STT_LANGUAGE", "en")
 
-MCP_SERVER_PORT        = int(os.getenv("MCP_SERVER_PORT", "8000"))
-MCP_SESSION_TIMEOUT    = int(os.getenv("MCP_SESSION_TIMEOUT", "30"))
-MAX_TOOL_STEPS         = int(os.getenv("FRIDAY_MAX_TOOL_STEPS", "8"))
+MCP_SERVER_PORT        = env_int("MCP_SERVER_PORT", 8000)
+MCP_SESSION_TIMEOUT    = env_int("MCP_SESSION_TIMEOUT", 30)
+MAX_TOOL_STEPS         = env_int("FRIDAY_MAX_TOOL_STEPS", 8)
 FRIDAY_GREETING        = os.getenv(
     "FRIDAY_GREETING",
     "Greetings boss, you're awake late at night today. What you up to?"

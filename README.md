@@ -15,6 +15,10 @@ The core FRIDAY stack is built around the browser, filesystem, shell, desktop, a
 
 ## How it works
 
+Primary local browser mode uses OpenAI for the backend chat/tool loop. The older
+LiveKit voice worker can still use Deepgram/Sarvam/Whisper for STT,
+Gemini/OpenAI for LLM, and Sarvam/OpenAI for TTS when those keys are configured.
+
 ```
 Microphone ──► STT (Sarvam Saaras v3)
                     │
@@ -170,11 +174,11 @@ Copy `.env.example` → `.env` and fill in the values below.
 | `LIVEKIT_API_KEY` | optional | Only needed for the legacy LiveKit flow |
 | `LIVEKIT_API_SECRET` | optional | Only needed for the legacy LiveKit flow |
 | `GROQ_API_KEY` | optional | [console.groq.com](https://console.groq.com) — only needed if you switch `LLM_PROVIDER` to `"groq"` |
-| `SARVAM_API_KEY` | optional | [dashboard.sarvam.ai](https://dashboard.sarvam.ai) — only needed if the optional `friday_voice` worker uses Sarvam |
-| `OPENAI_API_KEY` | ✅ for local browser mode | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| `SARVAM_API_KEY` | optional | Only needed when legacy voice uses Sarvam STT/TTS |
+| `OPENAI_API_KEY` | ✅ local browser | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) — required for the primary local browser chat and browser mic transcription |
 | `DEEPGRAM_API_KEY` | optional | [console.deepgram.com](https://console.deepgram.com) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | optional | GCP service-account JSON path — only for `STT_PROVIDER = "google"` |
-| `GOOGLE_API_KEY` | optional | [aistudio.google.com](https://aistudio.google.com/projects) — only needed if the optional `friday_voice` worker uses Gemini |
+| `GOOGLE_API_KEY` | optional | [aistudio.google.com](https://aistudio.google.com/projects) — only needed when legacy voice/internal utilities use Gemini |
 | `FRIDAY_MAX_TOOL_STEPS` | optional | Raises per-turn tool budget for more complex tasks; default is `8` |
 | `FRIDAY_LOCAL_MAX_TOOL_ROUNDS` | optional | Raises the local browser chat tool-call budget; default is `14` |
 | `FRIDAY_LOCAL_MAX_OPENAI_TOOLS` | optional | Caps how many MCP tools the local browser chat exposes at once; default is `64` for faster replies |
@@ -191,20 +195,19 @@ Copy `.env.example` → `.env` and fill in the values below.
 
 ## Switching providers
 
-The **local browser mode** is the primary experience and currently uses OpenAI directly for:
+For the primary local browser console, keep:
 
-- browser chat completions
-- browser microphone transcription
-- desktop vision analysis
+```text
+LLM_PROVIDER=openai
+OPENAI_API_KEY=...
+```
 
-That means `OPENAI_API_KEY` is required for `uv run friday` chat, even if you set `LLM_PROVIDER=gemini` for the optional legacy voice worker.
+For the optional legacy voice worker, set provider variables in `.env`:
 
-`STT_PROVIDER`, `LLM_PROVIDER`, and `TTS_PROVIDER` mainly control the optional `uv run friday_voice` flow. You can switch those providers through `.env` or by editing `agent_friday.py` defaults:
-
-```python
-STT_PROVIDER = "deepgram"   # "deepgram" | "sarvam" | "whisper"
-LLM_PROVIDER = "gemini"     # "gemini" | "openai"
-TTS_PROVIDER = "sarvam"     # "sarvam" | "openai"
+```text
+STT_PROVIDER=deepgram   # deepgram | sarvam | whisper
+LLM_PROVIDER=gemini     # gemini | openai
+TTS_PROVIDER=sarvam     # sarvam | openai
 ```
 
 ---

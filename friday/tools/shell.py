@@ -6,11 +6,7 @@ import subprocess
 import platform
 import os
 
-from friday.core.permissions import (
-    authorize_tool_call,
-    format_permission_response,
-    record_tool_result,
-)
+from friday.safety.tool_guard import audit_allowed_tool, guard_shell_command
 from friday.subprocess_utils import run_powershell
 
 OS = platform.system()
@@ -24,15 +20,11 @@ def register(mcp):
         Use this to handle all unseen types of tasks (like running git, executing scripts, modifying OS settings, etc.).
         Returns the standard output and standard error. Note: The process will timeout after 60 seconds.
         """
-        decision, approval_request = authorize_tool_call(
-            "execute_shell_command",
-            {"command": command},
-            working_directory=os.getcwd(),
-        )
-        if decision.decision != "allow":
-            return format_permission_response(decision, approval_request=approval_request)
-
         try:
+            decision, safety_message = guard_shell_command("execute_shell_command", command)
+            if safety_message:
+                return safety_message
+
             if OS == "Windows":
                 # Use powershell for rich capabilities
                 result = run_powershell(command, timeout=60, no_profile=False, force_utf8=False)
@@ -59,34 +51,15 @@ def register(mcp):
             if len(output) > 4000:
                 output = output[:4000] + "\n... [TRUNCATED]"
 
-            record_tool_result(
+            audit_allowed_tool(
                 "execute_shell_command",
-                decision,
-                result="succeeded" if result.returncode == 0 else f"failed_exit_{result.returncode}",
                 command=command,
-                metadata={
-                    **decision.metadata,
-                    "exit_code": result.returncode,
-                    "working_directory": os.getcwd(),
-                },
+                risk_level=int(decision.risk_level),
+                decision=decision.decision,
+                result=output,
             )
             return output
         except subprocess.TimeoutExpired:
-            message = "Command execution timed out after 60 seconds."
-            record_tool_result(
-                "execute_shell_command",
-                decision,
-                result="timeout",
-                command=command,
-                metadata={**decision.metadata, "working_directory": os.getcwd()},
-            )
-            return message
+            return "Command execution timed out after 60 seconds."
         except Exception as e:
-            record_tool_result(
-                "execute_shell_command",
-                decision,
-                result=f"error:{e.__class__.__name__}",
-                command=command,
-                metadata={**decision.metadata, "working_directory": os.getcwd()},
-            )
             return f"Error executing command: {str(e)}"

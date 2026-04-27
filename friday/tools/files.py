@@ -10,11 +10,6 @@ import sys
 import time
 from pathlib import Path
 
-from friday.core.permissions import (
-    authorize_tool_call,
-    format_permission_response,
-    record_tool_result,
-)
 from friday.path_utils import (
     known_user_paths,
     resolve_user_path,
@@ -22,63 +17,11 @@ from friday.path_utils import (
     workspace_dir,
     workspace_path,
 )
+from friday.safety.tool_guard import audit_allowed_tool, guard_tool_call
 
 
 def _workspace_dir() -> str:
     return str(workspace_dir())
-
-
-def _normalize_search_name(name: str) -> str:
-    return name.strip().lower()
-
-
-def _depth_from_root(root: str, current: str) -> int:
-    root_depth = root.rstrip(os.sep).count(os.sep)
-    current_depth = current.rstrip(os.sep).count(os.sep)
-    return max(0, current_depth - root_depth)
-
-
-def _iter_search_roots(roots: str) -> list[Path]:
-    requested = [part.strip() for part in roots.split(",") if part.strip()]
-    if not requested:
-        requested = ["desktop", "documents", "downloads", "workspace", "home"]
-
-    known = known_user_paths()
-    resolved: list[Path] = []
-    seen: set[str] = set()
-    for item in requested:
-        candidate = known.get(item.lower())
-        if candidate is None:
-            candidate = resolve_user_path(item)
-
-        try:
-            resolved_path = candidate.resolve()
-        except Exception:
-            continue
-
-        cache_key = str(resolved_path).lower()
-        if cache_key in seen or not resolved_path.exists():
-            continue
-
-        seen.add(cache_key)
-        resolved.append(resolved_path)
-    return resolved
-
-
-def _should_skip_search_dir(name: str) -> bool:
-    lowered = name.strip().lower()
-    return lowered.startswith(".") or lowered in {
-        "__pycache__",
-        ".git",
-        ".venv",
-        "node_modules",
-        "appdata",
-        "programdata",
-        "$recycle.bin",
-        "system volume information",
-        ".idea",
-        ".vscode",
-    }
 
 
 def _open_path_default(path: str) -> str:
@@ -119,6 +62,16 @@ def register(mcp):
             filename = safe_filename(filename, f"download_{int(time.time())}")
 
             save_path = workspace_path(filename)
+            if save_path.exists():
+                decision, safety_message = guard_tool_call(
+                    "write_file",
+                    {"file_path": str(save_path), "overwrite": True},
+                    subject=str(save_path),
+                )
+                if safety_message:
+                    return safety_message
+            else:
+                decision = None
 
             async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
                 response = await client.get(url)
@@ -129,7 +82,16 @@ def register(mcp):
                 f.write(content)
 
             size_kb = len(content) / 1024
-            return f"Downloaded '{filename}' ({size_kb:.1f} KB) → {save_path}"
+            output = f"Downloaded '{filename}' ({size_kb:.1f} KB) → {save_path}"
+            if decision is not None:
+                audit_allowed_tool(
+                    "download_file",
+                    command=str(save_path),
+                    risk_level=int(decision.risk_level),
+                    decision=decision.decision,
+                    result=output,
+                )
+            return output
         except Exception as e:
             return f"Error downloading file: {str(e)}"
 
@@ -210,11 +172,27 @@ def register(mcp):
                 target_dir = workspace
 
             file_path = Path(target_dir) / safe_filename(filename, "document.txt")
+            decision, safety_message = guard_tool_call(
+                "create_document",
+                {"filename": filename, "overwrite": file_path.exists()},
+                subject=str(file_path),
+            )
+            if safety_message:
+                return safety_message
+
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
             size_kb = len(content.encode("utf-8")) / 1024
-            return f"Created '{filename}' ({size_kb:.2f} KB) → {file_path}"
+            output = f"Created '{filename}' ({size_kb:.2f} KB) → {file_path}"
+            audit_allowed_tool(
+                "create_document",
+                command=str(file_path),
+                risk_level=int(decision.risk_level),
+                decision=decision.decision,
+                result=output,
+            )
+            return output
         except Exception as e:
             return f"Error creating document: {str(e)}"
 
@@ -242,75 +220,6 @@ def register(mcp):
             return "\n".join(f"{name}: {path}" for name, path in known_user_paths().items())
         except Exception as e:
             return f"Error getting special paths: {str(e)}"
-
-    @mcp.tool()
-    def search_paths_by_name(
-        name: str,
-        roots: str = "desktop,documents,downloads,workspace,home",
-        max_results: int = 20,
-        max_depth: int = 8,
-        exact: bool = False,
-        directories_only: bool = True,
-    ) -> str:
-        """
-        Search common user folders for a file or folder by name.
-        Use this when the user mentions a project/folder/file name but not the full path.
-        roots supports built-in names like desktop, documents, downloads, workspace, and home.
-        """
-        try:
-            target = _normalize_search_name(name)
-            if not target:
-                return "Provide a file or folder name to search for."
-
-            search_roots = _iter_search_roots(roots)
-            if not search_roots:
-                return "No valid search roots were available."
-
-            result_limit = max(1, min(int(max_results), 100))
-            depth_limit = max(1, min(int(max_depth), 20))
-            matches: list[str] = []
-
-            for root in search_roots:
-                for current_root, dirs, files in os.walk(root):
-                    dirs[:] = [d for d in dirs if not _should_skip_search_dir(d)]
-                    if _depth_from_root(str(root), current_root) >= depth_limit:
-                        dirs[:] = []
-
-                    candidate_names = dirs if directories_only else dirs + files
-                    for candidate_name in candidate_names:
-                        candidate_lower = candidate_name.lower()
-                        matched = candidate_lower == target if exact else target in candidate_lower
-                        if not matched:
-                            continue
-
-                        full_path = str(Path(current_root) / candidate_name)
-                        matches.append(full_path)
-                        if len(matches) >= result_limit:
-                            break
-
-                    if len(matches) >= result_limit:
-                        break
-                if len(matches) >= result_limit:
-                    break
-
-            searched = ", ".join(str(path) for path in search_roots)
-            if not matches:
-                noun = "folders" if directories_only else "paths"
-                mode = "exactly named" if exact else "matching"
-                return (
-                    f"No {noun} {mode} '{name.strip()}' were found.\n"
-                    f"Searched roots: {searched}\n"
-                    f"Max depth: {depth_limit}"
-                )
-
-            label = "folder" if directories_only else "path"
-            suffix = "s" if len(matches) != 1 else ""
-            return (
-                f"Found {len(matches)} matching {label}{suffix} for '{name.strip()}':\n"
-                + "\n".join(f"- {match}" for match in matches)
-            )
-        except Exception as e:
-            return f"Error searching paths: {str(e)}"
 
     @mcp.tool()
     def list_workspace_files() -> str:
@@ -397,18 +306,13 @@ def register(mcp):
                 return f"Source path does not exist: {source}"
             if destination.exists() and not overwrite:
                 return f"Destination already exists: {destination}. Set overwrite=true to replace it."
-
-            decision, approval_request = authorize_tool_call(
+            decision, safety_message = guard_tool_call(
                 "copy_path",
-                {
-                    "source_path": source_path,
-                    "destination_path": destination_path,
-                    "overwrite": overwrite,
-                },
-                working_directory=_workspace_dir(),
+                {"source_path": source_path, "destination_path": destination_path, "overwrite": overwrite},
+                subject=str(destination),
             )
-            if decision.decision != "allow":
-                return format_permission_response(decision, approval_request=approval_request)
+            if safety_message:
+                return safety_message
 
             if destination.exists():
                 if destination.is_dir():
@@ -419,30 +323,11 @@ def register(mcp):
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
                 shutil.copytree(source, destination)
-                record_tool_result(
-                    "copy_path",
-                    decision,
-                    result="succeeded",
-                    path=str(destination),
-                )
                 return f"Copied folder to {destination}"
 
             shutil.copy2(source, destination)
-            record_tool_result(
-                "copy_path",
-                decision,
-                result="succeeded",
-                path=str(destination),
-            )
             return f"Copied file to {destination}"
         except Exception as e:
-            if "decision" in locals():
-                record_tool_result(
-                    "copy_path",
-                    decision,
-                    result=f"error:{e.__class__.__name__}",
-                    path=destination_path,
-                )
             return f"Error copying path: {str(e)}"
 
     @mcp.tool()
@@ -459,18 +344,13 @@ def register(mcp):
                 return f"Source path does not exist: {source}"
             if destination.exists() and not overwrite:
                 return f"Destination already exists: {destination}. Set overwrite=true to replace it."
-
-            decision, approval_request = authorize_tool_call(
+            decision, safety_message = guard_tool_call(
                 "move_path",
-                {
-                    "source_path": source_path,
-                    "destination_path": destination_path,
-                    "overwrite": overwrite,
-                },
-                working_directory=_workspace_dir(),
+                {"source_path": source_path, "destination_path": destination_path, "overwrite": overwrite},
+                subject=str(destination),
             )
-            if decision.decision != "allow":
-                return format_permission_response(decision, approval_request=approval_request)
+            if safety_message:
+                return safety_message
 
             if destination.exists():
                 if destination.is_dir():
@@ -480,21 +360,8 @@ def register(mcp):
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(source), str(destination))
-            record_tool_result(
-                "move_path",
-                decision,
-                result="succeeded",
-                path=str(destination),
-            )
             return f"Moved path to {destination}"
         except Exception as e:
-            if "decision" in locals():
-                record_tool_result(
-                    "move_path",
-                    decision,
-                    result=f"error:{e.__class__.__name__}",
-                    path=destination_path,
-                )
             return f"Error moving path: {str(e)}"
 
     @mcp.tool()
@@ -505,50 +372,45 @@ def register(mcp):
         """
         try:
             target = resolve_user_path(path)
+            decision, safety_message = guard_tool_call(
+                "delete_path",
+                {"path": path, "recursive": recursive},
+                subject=str(target),
+            )
+            if safety_message:
+                return safety_message
+
             if not target.exists():
                 return f"Path does not exist: {target}"
 
             if target.is_dir():
                 if any(target.iterdir()) and not recursive:
                     return f"Folder is not empty: {target}. Set recursive=true to remove it."
-
-            decision, approval_request = authorize_tool_call(
-                "delete_path",
-                {"path": path, "recursive": recursive},
-                working_directory=_workspace_dir(),
-            )
-            if decision.decision != "allow":
-                return format_permission_response(decision, approval_request=approval_request)
-
-            if target.is_dir():
                 if recursive:
                     shutil.rmtree(target)
                 else:
                     target.rmdir()
-                record_tool_result(
+                output = f"Deleted folder: {target}"
+                audit_allowed_tool(
                     "delete_path",
-                    decision,
-                    result="succeeded",
-                    path=str(target),
+                    command=str(target),
+                    risk_level=int(decision.risk_level),
+                    decision=decision.decision,
+                    result=output,
                 )
-                return f"Deleted folder: {target}"
+                return output
 
             target.unlink()
-            record_tool_result(
+            output = f"Deleted file: {target}"
+            audit_allowed_tool(
                 "delete_path",
-                decision,
-                result="succeeded",
-                path=str(target),
+                command=str(target),
+                risk_level=int(decision.risk_level),
+                decision=decision.decision,
+                result=output,
             )
-            return f"Deleted file: {target}"
+            return output
         except Exception as e:
-            if "decision" in locals():
-                record_tool_result(
-                    "delete_path",
-                    decision,
-                    result=f"error:{e.__class__.__name__}",
-                    path=path,
-                )
             return f"Error deleting path: {str(e)}"
 
     @mcp.tool()
@@ -559,31 +421,25 @@ def register(mcp):
         """
         try:
             file_path = workspace_path(filename)
-            if not os.path.exists(file_path):
-                return f"File not found in workspace: {filename}"
-
-            decision, approval_request = authorize_tool_call(
+            decision, safety_message = guard_tool_call(
                 "delete_workspace_file",
                 {"filename": filename},
-                working_directory=_workspace_dir(),
+                subject=str(file_path),
             )
-            if decision.decision != "allow":
-                return format_permission_response(decision, approval_request=approval_request)
+            if safety_message:
+                return safety_message
 
+            if not os.path.exists(file_path):
+                return f"File not found in workspace: {filename}"
             os.remove(file_path)
-            record_tool_result(
+            output = f"Deleted '{filename}' from workspace."
+            audit_allowed_tool(
                 "delete_workspace_file",
-                decision,
-                result="succeeded",
-                path=str(file_path),
+                command=str(file_path),
+                risk_level=int(decision.risk_level),
+                decision=decision.decision,
+                result=output,
             )
-            return f"Deleted '{filename}' from workspace."
+            return output
         except Exception as e:
-            if "decision" in locals():
-                record_tool_result(
-                    "delete_workspace_file",
-                    decision,
-                    result=f"error:{e.__class__.__name__}",
-                    path=filename,
-                )
             return f"Error deleting file: {str(e)}"

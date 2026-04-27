@@ -1,574 +1,275 @@
 """
-Structured planning for FRIDAY's command pipeline.
+Simple structured planner for Phase 3.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
-from friday.core.models import ExecutionPlan, IntentRoute, PlanStep
-from friday.core.risk import classify_tool_call
-from friday.path_utils import workspace_path
+from friday.core.models import ExecutionPlan, Intent, IntentResult, IntentRoute, Plan, PlanStep
+from friday.core.permissions import check_shell_permission, check_tool_permission
+from friday.core.risk import (
+    RiskLevel,
+    classify_browser_action,
+    classify_desktop_action,
+    classify_file_operation,
+)
+from friday.core.router import route_intent
 
 
-def _make_step(
-    step_id: str,
+def _step(
+    index: int,
+    *,
     description: str,
     executor: str,
     action_type: str,
-    tool_name: str,
-    parameters: dict[str, object],
+    parameters: dict,
     expected_result: str,
+    risk_level: RiskLevel,
+    needs_approval: bool,
     verification_method: str,
-    verification_target: str = "",
-    allow_recovery: bool = True,
 ) -> PlanStep:
-    assessment = classify_tool_call(tool_name, dict(parameters))
     return PlanStep(
-        id=step_id,
+        id=f"step_{index}",
         description=description,
         executor=executor,
         action_type=action_type,
-        tool_name=tool_name,
-        parameters=dict(parameters),
+        parameters=parameters,
         expected_result=expected_result,
-        risk_level=assessment.risk_level,
-        needs_approval=assessment.needs_approval or assessment.blocked,
+        risk_level=risk_level,
+        needs_approval=needs_approval,
         verification_method=verification_method,
-        verification_target=verification_target,
-        allow_recovery=allow_recovery,
     )
 
 
 def _extract_quoted_text(message: str) -> str:
-    match = re.search(r'"([^"]+)"', message)
-    if match:
-        return match.group(1).strip()
-    match = re.search(r"'([^']+)'", message)
-    if match:
-        return match.group(1).strip()
-    return ""
+    match = re.search(r"['\"]([^'\"]+)['\"]", message)
+    return match.group(1) if match else ""
 
 
-def _clean_fragment(value: str) -> str:
-    return re.sub(r"\s+", " ", value.strip(" .,!?\n\t")).strip()
-
-
-def _extract_special_root(message: str) -> str:
+def _file_plan(message: str, intent: IntentResult) -> list[PlanStep]:
     lowered = message.lower()
-    if "downloads" in lowered:
-        return "Downloads"
-    if "documents" in lowered:
-        return "Documents"
-    if "desktop" in lowered:
-        return "Desktop"
-    if "workspace" in lowered:
-        return "."
-    return "."
-
-
-def _desktop_plan(message: str, route: IntentRoute) -> ExecutionPlan:
-    normalized = message.strip()
-    match = re.search(r"open\s+(.+?)\s+and\s+type\s+(.+)$", normalized, flags=re.IGNORECASE)
-    steps: list[PlanStep] = []
-    notes: list[str] = []
-
-    if match:
-        app_name = _clean_fragment(match.group(1))
-        typed_text = _clean_fragment(match.group(2))
-        steps.append(
-            _make_step(
-                "open_app",
-                f"Open {app_name}",
-                route.suggested_executor,
-                "desktop.open_app",
-                "open_application",
-                {"app_name": app_name},
-                f"Application {app_name} is open",
-                "window_present",
-                verification_target=app_name,
-            )
-        )
-        steps.append(
-            _make_step(
-                "type_text",
-                f"Type text into {app_name}",
-                route.suggested_executor,
-                "desktop.type_text",
-                "type_text",
-                {"text": typed_text},
-                "Text was typed into the focused window",
-                "tool_output_contains",
-                verification_target="Typed",
-            )
-        )
-    else:
-        open_match = re.search(r"open\s+(.+)$", normalized, flags=re.IGNORECASE)
-        if open_match:
-            app_name = _clean_fragment(open_match.group(1))
-            steps.append(
-                _make_step(
-                    "open_app",
-                    f"Open {app_name}",
-                    route.suggested_executor,
-                    "desktop.open_app",
-                    "open_application",
-                    {"app_name": app_name},
-                    f"Application {app_name} is open",
-                    "window_present",
-                    verification_target=app_name,
-                )
-            )
-        else:
-            notes.append("The desktop command did not match a supported structured pattern.")
-
-    return ExecutionPlan(
-        goal=message,
-        intent=route.intent,
-        confidence=route.confidence,
-        required_capabilities=route.required_capabilities,
-        suggested_executor=route.suggested_executor,
-        steps=steps,
-        summary="Desktop command plan",
-        notes=notes,
-        supported=bool(steps),
-    )
-
-
-def _browser_url_for_message(message: str) -> str:
-    explicit_url = re.search(r"(https?://\S+)", message, flags=re.IGNORECASE)
-    if explicit_url:
-        return explicit_url.group(1).rstrip(".,)")
-    if "google" in message.lower():
-        return "https://www.google.com"
-    if "youtube" in message.lower():
-        return "https://www.youtube.com"
-    return ""
-
-
-def _browser_plan(message: str, route: IntentRoute) -> ExecutionPlan:
-    steps: list[PlanStep] = []
-    notes: list[str] = []
-    url = _browser_url_for_message(message)
-
-    if url:
-        tool_name = "open_url" if "open " in message.lower() else "browser_navigate"
-        steps.append(
-            _make_step(
-                "open_browser_target",
-                f"Open {url}",
-                route.suggested_executor,
-                "browser.navigate",
-                tool_name,
-                {"url": url},
-                f"Browser reached {url}",
-                "tool_output_contains",
-                verification_target=url.split("//", 1)[-1].split("/", 1)[0],
-            )
-        )
-        if tool_name == "browser_navigate":
-            steps.append(
-                _make_step(
-                    "inspect_browser_state",
-                    "Inspect the browser state",
-                    route.suggested_executor,
-                    "browser.inspect",
-                    "browser_get_state",
-                    {},
-                    "Browser state is available",
-                    "tool_output_contains",
-                    verification_target="Interactive elements",
-                    allow_recovery=False,
-                )
-            )
-    else:
-        notes.append("The browser command needs an explicit URL or a supported well-known site.")
-
-    return ExecutionPlan(
-        goal=message,
-        intent=route.intent,
-        confidence=route.confidence,
-        required_capabilities=route.required_capabilities,
-        suggested_executor=route.suggested_executor,
-        steps=steps,
-        summary="Browser command plan",
-        notes=notes,
-        supported=bool(steps),
-    )
-
-
-def _path_name_from_message(message: str, default_name: str) -> str:
-    quoted = _extract_quoted_text(message)
-    if quoted:
-        return quoted
-    filename_match = re.search(r"\b([\w\-]+\.(?:txt|md|json|csv|py))\b", message, flags=re.IGNORECASE)
-    if filename_match:
-        return filename_match.group(1)
-    return default_name
-
-
-def _files_plan(message: str, route: IntentRoute) -> ExecutionPlan:
-    lowered = message.lower()
-    steps: list[PlanStep] = []
-    notes: list[str] = []
-
-    if any(word in lowered for word in ("list", "show")):
-        path_value = _extract_special_root(message)
-        steps.append(
-            _make_step(
-                "list_files",
-                f"List files in {path_value}",
-                route.suggested_executor,
-                "files.list",
-                "list_directory_tree",
-                {"path": path_value, "max_depth": 2},
-                "Directory listing is available",
-                "tool_output_contains",
-                verification_target="/",
-            )
-        )
-    elif any(word in lowered for word in ("read", "show file", "open file")):
-        file_path = _path_name_from_message(message, "README.md")
-        steps.append(
-            _make_step(
-                "read_file",
-                f"Read {file_path}",
-                route.suggested_executor,
-                "files.read",
-                "get_file_contents",
-                {"file_path": file_path},
-                f"File contents for {file_path} are available",
-                "tool_output_nonempty",
-                verification_target=file_path,
-            )
-        )
-    elif any(word in lowered for word in ("create", "write", "save")):
-        filename = _path_name_from_message(message, "report.md" if "report" in lowered else "note.txt")
-        content = "# Report\n\nCreated by FRIDAY.\n" if filename.endswith(".md") else "Created by FRIDAY.\n"
-        steps.append(
-            _make_step(
-                "write_file",
-                f"Write {filename}",
-                route.suggested_executor,
-                "files.write",
-                "write_file",
-                {"file_path": filename, "content": content},
-                f"Created {filename}",
-                "file_exists",
-                verification_target=str(workspace_path(filename)),
-            )
-        )
-    elif "delete" in lowered:
-        target = _path_name_from_message(message, ".")
-        steps.append(
-            _make_step(
-                "delete_path",
-                f"Delete {target}",
-                route.suggested_executor,
-                "files.delete",
-                "delete_path",
-                {"path": target},
-                f"Delete request issued for {target}",
-                "permission_or_absence",
-                verification_target=str(target),
-            )
-        )
-    else:
-        notes.append("The file command did not match a supported structured pattern.")
-
-    return ExecutionPlan(
-        goal=message,
-        intent=route.intent,
-        confidence=route.confidence,
-        required_capabilities=route.required_capabilities,
-        suggested_executor=route.suggested_executor,
-        steps=steps,
-        summary="Filesystem command plan",
-        notes=notes,
-        supported=bool(steps),
-    )
-
-
-def _shell_command_from_message(message: str) -> str:
-    quoted = _extract_quoted_text(message)
-    if quoted:
-        return quoted
-    if "pytest" in message.lower() or "run tests" in message.lower():
-        return "pytest tests -q"
-    return ""
-
-
-def _shell_or_code_plan(message: str, route: IntentRoute) -> ExecutionPlan:
-    steps: list[PlanStep] = []
-    notes: list[str] = []
-    command = _shell_command_from_message(message)
-
-    if command:
-        steps.append(
-            _make_step(
-                "run_command",
-                f"Run `{command}`",
-                route.suggested_executor,
-                "shell.command",
-                "run_shell_command",
-                {"command": command},
-                "Command exits successfully",
-                "command_output_ok",
-                verification_target=command,
-            )
-        )
-    elif "git status" in message.lower():
-        steps.append(
-            _make_step(
-                "git_status",
-                "Inspect repository status",
-                route.suggested_executor,
-                "code.git_status",
-                "git_status",
-                {},
-                "Git status is available",
-                "tool_output_contains",
-                verification_target="Git Status",
-            )
-        )
-    else:
-        notes.append("The shell/code command needs an explicit supported command pattern.")
-
-    supported = bool(steps) and "fix error" not in message.lower()
-    if "fix error" in message.lower():
-        notes.append("Automatic code fixing still falls back to the legacy tool loop.")
-
-    return ExecutionPlan(
-        goal=message,
-        intent=route.intent,
-        confidence=route.confidence,
-        required_capabilities=route.required_capabilities,
-        suggested_executor=route.suggested_executor,
-        steps=steps,
-        summary="Shell or code command plan",
-        notes=notes,
-        supported=supported,
-    )
-
-
-def _research_plan(message: str, route: IntentRoute) -> ExecutionPlan:
-    lowered = message.lower()
-    steps: list[PlanStep] = []
-    notes: list[str] = []
-    query = _clean_fragment(
-        re.sub(r"^(search|research|find|look up)\s+", "", message, flags=re.IGNORECASE)
-    ) or message.strip()
-
-    steps.append(
-        _make_step(
-            "search_web",
-            f"Search the web for {query}",
-            route.suggested_executor,
-            "research.search",
-            "search_web",
-            {"query": query},
-            "Search results are available",
-            "tool_output_nonempty",
-            verification_target="search results",
-        )
-    )
-
-    if any(word in lowered for word in ("save", "report", "write")):
-        steps.append(
-            _make_step(
-                "write_report",
-                "Save a local research report draft",
-                route.suggested_executor,
-                "research.write_report",
-                "write_file",
-                {"file_path": "research_report.md", "content": f"# Research Report\n\nTopic: {query}\n"},
-                "Research report file exists",
-                "file_exists",
-                verification_target=str(workspace_path("research_report.md")),
-            )
-        )
-
-    return ExecutionPlan(
-        goal=message,
-        intent=route.intent,
-        confidence=route.confidence,
-        required_capabilities=route.required_capabilities,
-        suggested_executor=route.suggested_executor,
-        steps=steps,
-        summary="Research command plan",
-        notes=notes,
-        supported=bool(steps),
-    )
-
-
-def _workflow_plan(message: str, route: IntentRoute) -> ExecutionPlan:
-    lowered = message.lower()
-    if "status" in lowered:
-        steps = [
-            _make_step(
-                "workflow_status",
-                "Read the latest workflow status",
-                route.suggested_executor,
-                "workflow.status",
-                "get_workflow_status",
-                {},
-                "Workflow status is available",
-                "tool_output_contains",
-                verification_target="Workflow Plan",
-                allow_recovery=False,
-            )
-        ]
-    else:
-        steps = [
-            _make_step(
-                "workflow_plan",
-                "Create a workflow plan",
-                route.suggested_executor,
-                "workflow.plan",
-                "create_workflow_plan",
-                {"goal": message, "mode": "safe"},
-                "Workflow plan was created",
-                "tool_output_contains",
-                verification_target="Workflow Plan",
+    if "delete" in lowered or "remove" in lowered:
+        assessment = classify_file_operation("delete")
+        return [
+            _step(
+                1,
+                description="Preview and request approval before deleting the requested path.",
+                executor="files",
+                action_type="delete_path",
+                parameters={"path": _extract_quoted_text(message) or ""},
+                expected_result="Deletion is blocked until the user approves it.",
+                risk_level=assessment.level,
+                needs_approval=True,
+                verification_method="path_absent",
             )
         ]
 
-    return ExecutionPlan(
-        goal=message,
-        intent=route.intent,
-        confidence=route.confidence,
-        required_capabilities=route.required_capabilities,
-        suggested_executor=route.suggested_executor,
-        steps=steps,
-        summary="Workflow command plan",
-        supported=True,
-    )
+    assessment = classify_file_operation("write_new")
+    return [
+        _step(
+            1,
+            description="Create or save the requested file in the workspace.",
+            executor="files",
+            action_type="write_file",
+            parameters={"path": "workspace/generated_by_friday.txt", "content": _extract_quoted_text(message) or message},
+            expected_result="File exists at the target path.",
+            risk_level=assessment.level,
+            needs_approval=False,
+            verification_method="file_exists",
+        )
+    ]
 
 
-def _memory_plan(message: str, route: IntentRoute) -> ExecutionPlan:
+def _shell_or_code_plan(message: str, intent: IntentResult) -> list[PlanStep]:
     lowered = message.lower()
-    if any(word in lowered for word in ("trace", "action", "workflow")):
-        tool_name = "get_recent_action_traces"
-        params: dict[str, object] = {"limit": 5}
+    if "push" in lowered:
+        command = "git push"
+    elif "commit" in lowered:
+        command = "git commit -m 'FRIDAY changes'"
+    elif "test" in lowered or "pytest" in lowered:
+        command = "pytest tests -q"
     else:
-        tool_name = "get_recent_history"
-        params = {"limit": 5}
+        command = message
+    decision = check_shell_permission(command)
+    return [
+        _step(
+            1,
+            description="Run the requested local command with permission checks.",
+            executor="code" if intent.intent == Intent.CODE else "shell",
+            action_type="shell_command",
+            parameters={"command": command},
+            expected_result="Command exits successfully or returns a captured error.",
+            risk_level=decision.risk_level,
+            needs_approval=decision.needs_approval,
+            verification_method="exit_code",
+        )
+    ]
 
-    return ExecutionPlan(
-        goal=message,
-        intent=route.intent,
-        confidence=route.confidence,
-        required_capabilities=route.required_capabilities,
-        suggested_executor=route.suggested_executor,
-        steps=[
-            _make_step(
-                "memory_read",
-                "Read recent memory state",
-                route.suggested_executor,
-                "memory.read",
-                tool_name,
-                params,
-                "Memory results are available",
-                "tool_output_nonempty",
-                verification_target="memory",
-                allow_recovery=False,
+
+def _desktop_plan(message: str) -> list[PlanStep]:
+    assessment = classify_desktop_action("open_app")
+    app_name = "Notepad" if "notepad" in message.lower() else _extract_quoted_text(message) or "requested application"
+    steps = [
+        _step(
+            1,
+            description=f"Open {app_name}.",
+            executor="desktop",
+            action_type="open_app",
+            parameters={"app_name": app_name},
+            expected_result="Application window is active or visible.",
+            risk_level=assessment.level,
+            needs_approval=False,
+            verification_method="window_active",
+        )
+    ]
+    quoted = _extract_quoted_text(message)
+    if "type" in message.lower():
+        type_assessment = classify_desktop_action("type_text")
+        steps.append(
+            _step(
+                2,
+                description="Type the requested text into the active application.",
+                executor="desktop",
+                action_type="type_text",
+                parameters={"text": quoted or "hello"},
+                expected_result="Text appears in the active application.",
+                risk_level=type_assessment.level,
+                needs_approval=False,
+                verification_method="screen_contains",
             )
-        ],
-        summary="Memory command plan",
-        supported=True,
-    )
+        )
+    return steps
 
 
-def _system_plan(message: str, route: IntentRoute) -> ExecutionPlan:
-    lowered = message.lower()
-    if any(word in lowered for word in ("time", "date")):
-        step = _make_step(
-            "system_time",
-            "Read the current time",
-            route.suggested_executor,
-            "system.time",
-            "get_current_time",
-            {},
-            "Current time is available",
-            "tool_output_contains",
-            verification_target="ISO 8601",
-            allow_recovery=False,
+def _browser_or_research_plan(message: str, intent: IntentResult) -> list[PlanStep]:
+    assessment = classify_browser_action("read")
+    executor = "research" if intent.intent == Intent.RESEARCH else "browser"
+    return [
+        _step(
+            1,
+            description="Observe or search the requested web content before taking actions.",
+            executor=executor,
+            action_type="browser_observe",
+            parameters={"query": message},
+            expected_result="Relevant page or source text is available for summarization.",
+            risk_level=assessment.level,
+            needs_approval=False,
+            verification_method="text_contains",
         )
-    elif "running apps" in lowered:
-        step = _make_step(
-            "running_apps",
-            "List running applications",
-            route.suggested_executor,
-            "system.running_apps",
-            "get_running_apps",
-            {},
-            "Running app list is available",
-            "tool_output_nonempty",
-            verification_target="Running apps",
-            allow_recovery=False,
-        )
+    ]
+
+
+def create_plan(user_message: str, intent_result: IntentResult | None = None) -> Plan:
+    intent = intent_result or route_intent(user_message)
+    if intent.intent == Intent.FILES:
+        steps = _file_plan(user_message, intent)
+    elif intent.intent in {Intent.SHELL, Intent.CODE}:
+        steps = _shell_or_code_plan(user_message, intent)
+    elif intent.intent == Intent.DESKTOP:
+        steps = _desktop_plan(user_message)
+    elif intent.intent in {Intent.BROWSER, Intent.RESEARCH}:
+        steps = _browser_or_research_plan(user_message, intent)
+    elif intent.intent == Intent.MIXED:
+        steps = _browser_or_research_plan(user_message, intent) + _file_plan(user_message, intent)
     else:
-        step = _make_step(
-            "system_telemetry",
-            "Read system telemetry",
-            route.suggested_executor,
-            "system.telemetry",
-            "get_system_telemetry",
-            {},
-            "System telemetry is available",
-            "tool_output_nonempty",
-            verification_target="os",
-            allow_recovery=False,
-        )
+        assessment = check_tool_permission("get_host_control_status", {}).risk_level
+        steps = [
+            _step(
+                1,
+                description="Inspect current system status before choosing a tool.",
+                executor="system",
+                action_type="status",
+                parameters={},
+                expected_result="System status is available.",
+                risk_level=assessment,
+                needs_approval=False,
+                verification_method="output_nonempty",
+            )
+        ]
 
-    return ExecutionPlan(
-        goal=message,
-        intent=route.intent,
-        confidence=route.confidence,
-        required_capabilities=route.required_capabilities,
-        suggested_executor=route.suggested_executor,
-        steps=[step],
-        summary="System command plan",
-        supported=True,
-    )
+    return Plan(goal=user_message, intent=intent, steps=steps)
 
 
-def build_execution_plan(message: str, route: IntentRoute, *, dry_run: bool = False) -> ExecutionPlan:
-    """Build a structured execution plan for a routed intent."""
-    if route.intent == "desktop":
-        plan = _desktop_plan(message, route)
-    elif route.intent == "browser":
-        plan = _browser_plan(message, route)
-    elif route.intent == "files":
-        plan = _files_plan(message, route)
-    elif route.intent in {"shell", "code"}:
-        plan = _shell_or_code_plan(message, route)
-    elif route.intent == "research":
-        plan = _research_plan(message, route)
-    elif route.intent == "workflow":
-        plan = _workflow_plan(message, route)
-    elif route.intent == "memory":
-        plan = _memory_plan(message, route)
-    elif route.intent == "system":
-        plan = _system_plan(message, route)
-    else:
-        plan = ExecutionPlan(
-            goal=message,
+def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan:
+    """Compatibility planning surface for the structured command tests."""
+    lowered = user_message.strip().lower()
+    if route.should_use_legacy_fallback or "fix the error" in lowered or route.intent == "mixed":
+        return ExecutionPlan(
+            goal=user_message,
             intent=route.intent,
             confidence=route.confidence,
-            required_capabilities=route.required_capabilities,
+            required_capabilities=list(route.required_capabilities),
             suggested_executor=route.suggested_executor,
             steps=[],
-            dry_run=dry_run,
-            summary="No structured plan is available for this command.",
-            notes=["This command should fall back to the legacy local chat loop."],
             supported=False,
+            notes=["This request should fall back to the legacy local chat loop for now."],
         )
 
-    plan.dry_run = dry_run
-    if not plan.supported or not plan.steps:
-        plan.supported = False
-        if "This command should fall back to the legacy local chat loop." not in plan.notes:
-            plan.notes.append("This command should fall back to the legacy local chat loop.")
-    return plan
+    intent_result = IntentResult(
+        intent=Intent(route.intent),
+        confidence=route.confidence,
+        required_capabilities=list(route.required_capabilities),
+        likely_risk=RiskLevel(route.likely_risk),
+        suggested_executor=route.suggested_executor,
+    )
+    plan = create_plan(user_message, intent_result)
+    converted_steps: list[PlanStep] = []
+    for step in plan.steps:
+        tool_name = step.tool_name
+        if not tool_name:
+            tool_name = {
+                "open_app": "open_application",
+                "type_text": "type_text",
+                "write_file": "write_file",
+                "delete_path": "delete_path",
+                "shell_command": "run_shell_command",
+                "browser_observe": "search_web",
+                "status": "get_host_control_status",
+            }.get(step.action_type, step.action_type)
+
+        parameters = dict(step.parameters)
+        if step.action_type == "write_file":
+            default_name = "report.md" if "report" in lowered else "generated_by_friday.txt"
+            path_value = default_name if "report" in lowered else str(parameters.get("path", default_name))
+            parameters = {
+                "file_path": Path(path_value).name,
+                "content": parameters.get("content", ""),
+            }
+        verification_target = ""
+        if step.action_type == "write_file":
+            from friday.path_utils import resolve_user_path
+
+            verification_target = str(resolve_user_path(str(parameters["file_path"])))
+        elif step.action_type == "open_app":
+            verification_target = str(parameters.get("app_name", ""))
+
+        verification_method = step.verification_method
+        if step.action_type == "shell_command":
+            verification_method = "command_output_ok"
+
+        converted_steps.append(
+            PlanStep(
+                id=step.id,
+                description=step.description,
+                executor=step.executor,
+                action_type=step.action_type,
+                tool_name=tool_name,
+                parameters=parameters,
+                expected_result=step.expected_result,
+                risk_level=step.risk_level,
+                needs_approval=step.needs_approval,
+                verification_method=verification_method,
+                verification_target=verification_target,
+            )
+        )
+
+    return ExecutionPlan(
+        goal=user_message,
+        intent=route.intent,
+        confidence=route.confidence,
+        required_capabilities=list(route.required_capabilities),
+        suggested_executor=route.suggested_executor,
+        steps=converted_steps,
+    )

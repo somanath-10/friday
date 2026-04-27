@@ -1,153 +1,90 @@
 """
-Structured approval-request helpers for permission-gated FRIDAY actions.
+Structured approval requests for risky local actions.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any
+import time
 import uuid
+from dataclasses import asdict, dataclass
+from typing import Any
 
-from friday.core.risk import risk_level_label
+from friday.core.permissions import PermissionDecision
 
 
-@dataclass
+@dataclass(frozen=True)
 class ApprovalRequest:
-    """Structured approval payload for one risky action."""
-
-    request_id: str
-    created_at: str
-    tool: str
-    action: str
-    category: str
+    approval_id: str
+    action_summary: str
     risk_level: int
     risk_label: str
-    reason: str
+    risk_explanation: str
+    decision_reason: str
+    tool: str
     command: str = ""
     path: str = ""
     domain: str = ""
-    session_category: str = ""
-    options: list[str] = field(default_factory=lambda: ["one_time", "session"])
-    metadata: dict[str, Any] = field(default_factory=dict)
+    approval_modes: tuple[str, ...] = ("one_time", "session_limited")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["approval_modes"] = list(self.approval_modes)
+        return data
 
 
-@dataclass
-class SessionApproval:
-    category: str
-    value: str
-    expires_at: datetime
+_APPROVED_ONCE: set[str] = set()
+_SESSION_APPROVALS: dict[str, float] = {}
 
 
-class ApprovalGate:
-    """Tracks pending approvals plus simple in-memory session approvals."""
+def create_approval_request(
+    decision: PermissionDecision,
+    *,
+    tool: str,
+    command: str = "",
+    path: str = "",
+    domain: str = "",
+) -> ApprovalRequest:
+    subject = command or path or domain or decision.subject
+    summary = f"{tool}: {subject}" if subject else tool
+    return ApprovalRequest(
+        approval_id=f"apr_{uuid.uuid4().hex[:16]}",
+        action_summary=summary,
+        risk_level=int(decision.risk_level),
+        risk_label=decision.risk_label,
+        risk_explanation=decision.reason,
+        decision_reason=decision.reason,
+        tool=tool,
+        command=command,
+        path=path,
+        domain=domain,
+    )
 
-    def __init__(self) -> None:
-        self._pending: dict[str, ApprovalRequest] = {}
-        self._approved_once: set[str] = set()
-        self._session_approvals: list[SessionApproval] = []
 
-    def _now(self) -> datetime:
-        return datetime.now(timezone.utc)
+def format_approval_required(request: ApprovalRequest) -> str:
+    payload = request.to_dict()
+    return "Approval required before running this action:\n" + "\n".join(
+        f"{key}: {value}" for key, value in payload.items() if value != "" and value != []
+    )
 
-    def create_request(
-        self,
-        *,
-        tool: str,
-        action: str,
-        category: str,
-        risk_level: int,
-        reason: str,
-        command: str = "",
-        path: str = "",
-        domain: str = "",
-        metadata: dict[str, Any] | None = None,
-    ) -> ApprovalRequest:
-        request = ApprovalRequest(
-            request_id=f"apr_{uuid.uuid4().hex[:12]}",
-            created_at=self._now().isoformat(),
-            tool=tool,
-            action=action,
-            category=category,
-            risk_level=risk_level,
-            risk_label=risk_level_label(risk_level),
-            reason=reason,
-            command=command,
-            path=path,
-            domain=domain,
-            session_category=category,
-            metadata=metadata or {},
-        )
-        self._pending[request.request_id] = request
-        return request
 
-    def approve_once(self, request_id: str) -> bool:
-        if request_id not in self._pending:
-            return False
-        self._approved_once.add(request_id)
+def approve_once(approval_id: str) -> None:
+    _APPROVED_ONCE.add(approval_id)
+
+
+def approve_session(category: str, *, minutes: int = 10) -> None:
+    _SESSION_APPROVALS[category] = time.time() + max(minutes, 1) * 60
+
+
+def consume_one_time_approval(approval_id: str) -> bool:
+    if approval_id in _APPROVED_ONCE:
+        _APPROVED_ONCE.remove(approval_id)
         return True
+    return False
 
-    def consume_once_approval(self, request_id: str) -> bool:
-        if request_id not in self._approved_once:
-            return False
-        self._approved_once.discard(request_id)
-        self._pending.pop(request_id, None)
+
+def has_session_approval(category: str) -> bool:
+    expires_at = _SESSION_APPROVALS.get(category, 0)
+    if expires_at > time.time():
         return True
-
-    def grant_session_approval(self, category: str, *, value: str = "*", minutes: int = 10) -> SessionApproval:
-        approval = SessionApproval(
-            category=category,
-            value=value,
-            expires_at=self._now() + timedelta(minutes=max(1, minutes)),
-        )
-        self._session_approvals.append(approval)
-        return approval
-
-    def has_session_approval(self, category: str, *, value: str = "*") -> bool:
-        self.clear_expired()
-        for approval in self._session_approvals:
-            if approval.category != category:
-                continue
-            if approval.value in {"*", value}:
-                return True
-        return False
-
-    def clear_expired(self) -> None:
-        now = self._now()
-        self._session_approvals = [
-            approval for approval in self._session_approvals if approval.expires_at > now
-        ]
-
-    def pending_requests(self) -> list[ApprovalRequest]:
-        return list(self._pending.values())
-
-
-_APPROVAL_GATE = ApprovalGate()
-
-
-def get_approval_gate() -> ApprovalGate:
-    return _APPROVAL_GATE
-
-
-def format_approval_request(request: ApprovalRequest) -> str:
-    """Format a readable approval request for current tool responses."""
-    lines = [
-        f"[Approval Required] {request.action}",
-        f"Request ID: {request.request_id}",
-        f"Risk: {request.risk_level} ({request.risk_label})",
-        f"Reason: {request.reason}",
-    ]
-
-    if request.command:
-        lines.append(f"Command: {request.command}")
-    if request.path:
-        lines.append(f"Path: {request.path}")
-    if request.domain:
-        lines.append(f"Domain: {request.domain}")
-
-    lines.append("Approval options: one_time, session")
-    return "\n".join(lines)
-
+    _SESSION_APPROVALS.pop(category, None)
+    return False

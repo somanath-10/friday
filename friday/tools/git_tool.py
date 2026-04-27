@@ -6,11 +6,7 @@ import subprocess
 import os
 import platform
 
-from friday.core.permissions import (
-    authorize_tool_call,
-    format_permission_response,
-    record_tool_result,
-)
+from friday.safety.tool_guard import audit_allowed_tool, guard_tool_call
 
 OS = platform.system()
 
@@ -107,42 +103,23 @@ def register(mcp):
         cwd = _resolve_repo(repo_path)
         if not message.strip():
             return "Commit message cannot be empty."
-        decision, approval_request = authorize_tool_call(
+        decision, safety_message = guard_tool_call(
             "git_commit",
-            {"message": message, "repo_path": repo_path, "add_all": add_all},
-            working_directory=cwd,
+            {"message": message, "repo_path": cwd, "add_all": add_all},
+            subject=cwd,
         )
-        if decision.decision != "allow":
-            return format_permission_response(decision, approval_request=approval_request)
+        if safety_message:
+            return safety_message
         if add_all:
             code, _, err = _run_git(["add", "-A"], cwd=cwd)
             if code != 0:
-                record_tool_result(
-                    "git_commit",
-                    decision,
-                    result=f"stage_failed_exit_{code}",
-                    command="git add -A",
-                    metadata={**decision.metadata, "repo_path": cwd},
-                )
                 return f"Failed to stage changes: {err}"
         code, out, err = _run_git(["commit", "-m", message], cwd=cwd)
         if code != 0:
-            record_tool_result(
-                "git_commit",
-                decision,
-                result=f"failed_exit_{code}",
-                command=f'git commit -m "{message}"',
-                metadata={**decision.metadata, "repo_path": cwd},
-            )
             return f"Commit failed: {err}"
-        record_tool_result(
-            "git_commit",
-            decision,
-            result="succeeded",
-            command=f'git commit -m "{message}"',
-            metadata={**decision.metadata, "repo_path": cwd},
-        )
-        return f"Committed: {out}"
+        output = f"Committed: {out}"
+        audit_allowed_tool("git_commit", command=f"git commit -m {message}", risk_level=int(decision.risk_level), decision=decision.decision, result=output)
+        return output
 
     @mcp.tool()
     def git_push(repo_path: str = "", remote: str = "origin", branch: str = "") -> str:
@@ -153,34 +130,22 @@ def register(mcp):
         Use this when the user says 'push my changes', 'upload to GitHub'.
         """
         cwd = _resolve_repo(repo_path)
-        decision, approval_request = authorize_tool_call(
-            "git_push",
-            {"repo_path": repo_path, "remote": remote, "branch": branch},
-            working_directory=cwd,
-        )
-        if decision.decision != "allow":
-            return format_permission_response(decision, approval_request=approval_request)
         args = ["push", remote]
         if branch:
             args.append(branch)
+        decision, safety_message = guard_tool_call(
+            "git_push",
+            {"repo_path": cwd, "remote": remote, "branch": branch},
+            subject=cwd,
+        )
+        if safety_message:
+            return safety_message
         code, out, err = _run_git(args, cwd=cwd, timeout=60)
         if code != 0:
-            record_tool_result(
-                "git_push",
-                decision,
-                result=f"failed_exit_{code}",
-                command="git " + " ".join(args),
-                metadata={**decision.metadata, "repo_path": cwd},
-            )
             return f"Push failed: {err}"
-        record_tool_result(
-            "git_push",
-            decision,
-            result="succeeded",
-            command="git " + " ".join(args),
-            metadata={**decision.metadata, "repo_path": cwd},
-        )
-        return f"Pushed successfully: {out or err}"
+        output = f"Pushed successfully: {out or err}"
+        audit_allowed_tool("git_push", command="git " + " ".join(args), risk_level=int(decision.risk_level), decision=decision.decision, result=output)
+        return output
 
     @mcp.tool()
     def git_pull(repo_path: str = "", remote: str = "origin", branch: str = "") -> str:
