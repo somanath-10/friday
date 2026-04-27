@@ -23,7 +23,7 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 
 from friday.config import local_browser_setup_issues
-from friday.core.executor import run_structured_command
+from friday.core.executor import resume_approved_structured_command, run_structured_command
 from friday.tools.memory import record_conversation_turn, store_action_trace
 
 
@@ -144,6 +144,7 @@ class LocalChatResult:
     reply: str
     tool_events: list[dict[str, Any]]
     pipeline_events: list[dict[str, Any]] = field(default_factory=list)
+    approval_requests: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -844,6 +845,7 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
                         reply=structured_result.reply,
                         tool_events=tool_events,
                         pipeline_events=structured_result.pipeline_events,
+                        approval_requests=structured_result.approval_requests,
                     )
 
             tool_descriptors = await _load_tool_descriptors(session, mcp_url)
@@ -938,3 +940,38 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
     except Exception:
         logger.exception("Failed to persist fallback local chat trace")
     return LocalChatResult(reply=fallback, tool_events=tool_events)
+
+
+async def resume_approved_local_action(approval_id: str, mcp_url: str) -> LocalChatResult:
+    """Resume a structured local command after the browser UI approves it."""
+    async with sse_client(mcp_url) as streams:
+        read_stream, write_stream = streams
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            structured_result = await resume_approved_structured_command(
+                approval_id,
+                lambda tool_name, params: _invoke_rendered_tool(session, tool_name, params),
+            )
+            status = "completed" if structured_result.success else (
+                "approval_required" if structured_result.permission_pending else "failed"
+            )
+            try:
+                await record_conversation_turn(
+                    user_message=f"approval:{approval_id}",
+                    assistant_reply=structured_result.reply,
+                    tool_events=structured_result.tool_events,
+                )
+                await store_action_trace(
+                    goal=f"approval:{approval_id}",
+                    outcome=structured_result.reply,
+                    tool_events=structured_result.tool_events,
+                    status=status,
+                )
+            except Exception:
+                logger.exception("Failed to persist approval resume trace")
+            return LocalChatResult(
+                reply=structured_result.reply,
+                tool_events=structured_result.tool_events,
+                pipeline_events=structured_result.pipeline_events,
+                approval_requests=structured_result.approval_requests,
+            )

@@ -48,6 +48,18 @@ def _extract_quoted_text(message: str) -> str:
     return match.group(1) if match else ""
 
 
+def _extract_path_hint(message: str) -> str:
+    quoted = _extract_quoted_text(message)
+    if quoted:
+        return quoted
+    match = re.search(r"\b(?:delete|remove|move|rename|copy)\s+([^\s]+)", message, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    candidate = match.group(1).strip(".,;:()[]{}")
+    blocked_words = {"all", "files", "folders", "everything"}
+    return "" if candidate.lower() in blocked_words else candidate
+
+
 def _file_plan(message: str, intent: IntentResult) -> list[PlanStep]:
     lowered = message.lower()
     if "delete" in lowered or "remove" in lowered:
@@ -58,7 +70,7 @@ def _file_plan(message: str, intent: IntentResult) -> list[PlanStep]:
                 description="Preview and request approval before deleting the requested path.",
                 executor="files",
                 action_type="delete_path",
-                parameters={"path": _extract_quoted_text(message) or ""},
+                parameters={"path": _extract_path_hint(message)},
                 expected_result="Deletion is blocked until the user approves it.",
                 risk_level=assessment.level,
                 needs_approval=True,

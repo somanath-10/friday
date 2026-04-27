@@ -216,6 +216,7 @@ class PipelineRunResult:
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     pipeline_events: list[dict[str, Any]] = field(default_factory=list)
     step_results: list[StructuredStepResult] = field(default_factory=list)
+    approval_requests: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -228,4 +229,5 @@ class PipelineRunResult:
             "tool_events": list(self.tool_events),
             "pipeline_events": list(self.pipeline_events),
             "step_results": [result.to_dict() for result in self.step_results],
+            "approval_requests": list(self.approval_requests),
         }

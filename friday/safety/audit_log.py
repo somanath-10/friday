@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from friday.path_utils import workspace_dir
+from friday.safety.secrets_filter import redact_value
 
 
 def audit_log_path() -> Path:
@@ -34,19 +35,19 @@ def append_audit_record(
 ) -> Path:
     record: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "command": command,
-        "intent": intent,
-        "plan": plan,
+        "command": redact_value(command),
+        "intent": redact_value(intent),
+        "plan": redact_value(plan),
         "risk_level": risk_level,
-        "tool": tool,
+        "tool": redact_value(tool),
         "permission_decision": decision,
-        "result": result,
-        "verification": verification,
-        "errors": errors,
-        "recovery_attempts": recovery_attempts,
+        "result": redact_value(result),
+        "verification": redact_value(verification),
+        "errors": redact_value(errors),
+        "recovery_attempts": redact_value(recovery_attempts),
     }
     if extra:
-        record.update(extra)
+        record.update(redact_value(extra))
 
     path = audit_log_path()
     with path.open("a", encoding="utf-8") as handle:

@@ -1,0 +1,1 @@
+{"name": "run_project_tests", "intent": "code", "risk_level": 0, "steps": ["detect test command", "run tests", "capture output"]}

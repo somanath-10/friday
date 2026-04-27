@@ -1,0 +1,1 @@
+{"name": "open_app_and_type", "intent": "desktop", "risk_level": 2, "steps": ["open app", "verify window", "type text", "verify screen"]}

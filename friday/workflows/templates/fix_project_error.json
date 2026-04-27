@@ -1,0 +1,1 @@
+{"name": "fix_project_error", "intent": "code", "risk_level": 2, "steps": ["run tests", "inspect failure", "patch relevant files", "rerun tests"]}

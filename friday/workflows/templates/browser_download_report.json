@@ -1,0 +1,1 @@
+{"name": "browser_download_report", "intent": "browser", "risk_level": 2, "steps": ["open isolated browser", "download file", "verify download", "write report"]}

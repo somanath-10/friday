@@ -17,6 +17,7 @@ from friday.path_utils import (
     workspace_dir,
     workspace_path,
 )
+from friday.files.backup import create_backup
 from friday.safety.tool_guard import audit_allowed_tool, guard_tool_call
 
 
@@ -386,11 +387,12 @@ def register(mcp):
             if target.is_dir():
                 if any(target.iterdir()) and not recursive:
                     return f"Folder is not empty: {target}. Set recursive=true to remove it."
+                backup_path = create_backup(target)
                 if recursive:
                     shutil.rmtree(target)
                 else:
                     target.rmdir()
-                output = f"Deleted folder: {target}"
+                output = f"Deleted folder: {target}\nBackup: {backup_path}"
                 audit_allowed_tool(
                     "delete_path",
                     command=str(target),
@@ -400,8 +402,9 @@ def register(mcp):
                 )
                 return output
 
+            backup_path = create_backup(target)
             target.unlink()
-            output = f"Deleted file: {target}"
+            output = f"Deleted file: {target}\nBackup: {backup_path}"
             audit_allowed_tool(
                 "delete_path",
                 command=str(target),
@@ -431,8 +434,9 @@ def register(mcp):
 
             if not os.path.exists(file_path):
                 return f"File not found in workspace: {filename}"
+            backup_path = create_backup(file_path)
             os.remove(file_path)
-            output = f"Deleted '{filename}' from workspace."
+            output = f"Deleted '{filename}' from workspace.\nBackup: {backup_path}"
             audit_allowed_tool(
                 "delete_workspace_file",
                 command=str(file_path),

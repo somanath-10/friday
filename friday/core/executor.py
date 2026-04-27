@@ -24,12 +24,12 @@ from friday.core.models import (
 from friday.core.permissions import permission_for_assessment
 from friday.core.planner import build_execution_plan, create_plan
 from friday.core.recovery import choose_recovery_action, recover_step
-from friday.core.risk import RiskAssessment
+from friday.core.risk import RiskAssessment, RiskLevel
 from friday.core.router import route_intent, route_user_command
 from friday.core.verifier import verify_step_sync
 from friday.path_utils import resolve_user_path, workspace_dir
 from friday.safety.audit_log import append_audit_record
-from friday.safety.approval_gate import create_approval_request
+from friday.safety.approval_gate import create_approval_request, get_pending_approval, register_pending_approval
 
 
 def _assessment_from_step(step: PlanStep) -> RiskAssessment:
@@ -65,25 +65,71 @@ def _execute_allowed_step(step: PlanStep, *, goal: str = "") -> StepExecutionRes
                 error="" if desktop_result.ok else desktop_result.message,
             )
 
-        if step.action_type == "shell_command":
-            command = str(step.parameters.get("command", "")).strip()
-            result = subprocess.run(
-                command,
-                shell=True,
-                cwd=workspace_dir(),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            output = (result.stdout or "").strip()
-            if result.stderr.strip():
-                output = (output + "\n" if output else "") + result.stderr.strip()
+        if step.executor == "browser":
+            from friday.browser.runtime import BrowserRuntime
+
+            browser_result = BrowserRuntime().execute(goal, step, dry_run=False)
             return StepExecutionResult(
                 step.id,
-                "succeeded" if result.returncode == 0 else "failed",
-                output or f"Command exited {result.returncode} with no output.",
+                "succeeded" if browser_result.ok else "failed",
+                browser_result.message,
+                browser_result.permission_decision,
                 dry_run=False,
-                error="" if result.returncode == 0 else f"exit code {result.returncode}",
+                error="" if browser_result.ok else browser_result.message,
+            )
+
+        if step.executor == "research":
+            from friday.research.runtime import ResearchRuntime
+
+            research_result = ResearchRuntime().execute(str(step.parameters.get("query") or goal), dry_run=False)
+            return StepExecutionResult(
+                step.id,
+                "succeeded" if research_result.ok else "failed",
+                research_result.message,
+                dry_run=False,
+                error="" if research_result.ok else research_result.message,
+            )
+
+        if step.executor == "code":
+            from friday.code.runtime import CodeRuntime
+
+            code_result = CodeRuntime(Path.cwd()).execute(goal, step, dry_run=False)
+            return StepExecutionResult(
+                step.id,
+                "succeeded" if code_result.ok else "failed",
+                code_result.message,
+                dry_run=False,
+                error="" if code_result.ok else code_result.message,
+            )
+
+        if step.executor == "files":
+            from friday.files.runtime import FileRuntime
+
+            file_result = FileRuntime().execute(goal, step, dry_run=False)
+            return StepExecutionResult(
+                step.id,
+                "succeeded" if file_result.ok else "failed",
+                file_result.message,
+                file_result.permission_decision,
+                dry_run=False,
+                error="" if file_result.ok else file_result.message,
+            )
+
+        if step.action_type == "shell_command":
+            from friday.shell.runtime import ShellRuntime
+
+            command = str(step.parameters.get("command", "")).strip()
+            shell_result = ShellRuntime().execute_command(command, cwd=workspace_dir(), dry_run=False)
+            output = (shell_result.stdout or "").strip()
+            if shell_result.stderr.strip():
+                output = (output + "\n" if output else "") + shell_result.stderr.strip()
+            return StepExecutionResult(
+                step.id,
+                "succeeded" if shell_result.ok else "failed",
+                output or shell_result.message,
+                shell_result.permission_decision,
+                dry_run=False,
+                error="" if shell_result.ok else shell_result.message,
             )
 
         if step.action_type == "write_file":
@@ -206,6 +252,7 @@ class StructuredExecutor:
         pipeline_events: list[dict[str, Any]] = []
         tool_events: list[dict[str, Any]] = []
         step_results: list[StructuredStepResult] = []
+        approval_requests: list[dict[str, Any]] = []
 
         if not plan.supported:
             return PipelineRunResult(
@@ -232,7 +279,28 @@ class StructuredExecutor:
                 ),
             )
             if decision.decision == "ask":
-                pipeline_events.append({"event_type": "permission_required", "name": step.tool_name, "step_id": step.id})
+                approval = create_approval_request(
+                    decision,
+                    tool=step.tool_name or f"{step.executor}.{step.action_type}",
+                    command=str(step.parameters.get("command", "")),
+                    path=str(step.parameters.get("file_path") or step.parameters.get("path") or ""),
+                    domain=str(step.parameters.get("url") or ""),
+                )
+                approval_payload = {
+                    "command": plan.goal,
+                    "plan": plan.to_dict(),
+                    "resume_from_step_id": step.id,
+                }
+                register_pending_approval(approval, payload=approval_payload)
+                approval_requests.append(approval.to_dict())
+                pipeline_events.append(
+                    {
+                        "event_type": "permission_required",
+                        "name": step.tool_name,
+                        "step_id": step.id,
+                        "approval_request": approval.to_dict(),
+                    }
+                )
                 permission_pending = True
                 overall_success = False
                 step_results.append(
@@ -240,10 +308,10 @@ class StructuredExecutor:
                         step_id=step.id,
                         tool_name=step.tool_name,
                         success=False,
-                        output="[Approval Required] This action needs permission before FRIDAY can continue.",
+                        output=f"[Approval Required] {approval.action_summary}",
                     )
                 )
-                continue
+                break
             if decision.decision == "block":
                 pipeline_events.append({"event_type": "permission_denied", "name": step.tool_name, "step_id": step.id})
                 overall_success = False
@@ -334,6 +402,7 @@ class StructuredExecutor:
             tool_events=tool_events,
             pipeline_events=pipeline_events,
             step_results=step_results,
+            approval_requests=approval_requests,
         )
 
 
@@ -349,6 +418,103 @@ async def run_structured_command(user_message: str, tool_invoker, dry_run: bool 
             used_legacy_fallback=True,
         )
 
+    plan = ExecutionPlan(
+        goal=plan.goal,
+        intent=plan.intent,
+        confidence=plan.confidence,
+        required_capabilities=plan.required_capabilities,
+        suggested_executor=plan.suggested_executor,
+        steps=plan.steps,
+        supported=plan.supported,
+        dry_run=dry_run,
+        notes=plan.notes,
+    )
+    return await StructuredExecutor(tool_invoker).execute(plan)
+
+
+def _plan_step_from_dict(payload: dict[str, Any]) -> PlanStep:
+    return PlanStep(
+        id=str(payload.get("id", "")),
+        description=str(payload.get("description", "")),
+        executor=str(payload.get("executor", "")),
+        action_type=str(payload.get("action_type", "")),
+        parameters=dict(payload.get("parameters") or {}),
+        expected_result=str(payload.get("expected_result", "")),
+        risk_level=RiskLevel(int(payload.get("risk_level", 0))),
+        needs_approval=bool(payload.get("needs_approval", False)),
+        verification_method=str(payload.get("verification_method", "")),
+        tool_name=str(payload.get("tool_name", "")),
+        verification_target=str(payload.get("verification_target", "")),
+    )
+
+
+def execution_plan_from_dict(payload: dict[str, Any]) -> ExecutionPlan:
+    return ExecutionPlan(
+        goal=str(payload.get("goal", "")),
+        intent=str(payload.get("intent", "")),
+        confidence=float(payload.get("confidence", 0.0)),
+        required_capabilities=list(payload.get("required_capabilities") or []),
+        suggested_executor=str(payload.get("suggested_executor", "")),
+        steps=[_plan_step_from_dict(step) for step in payload.get("steps", []) if isinstance(step, dict)],
+        supported=bool(payload.get("supported", True)),
+        dry_run=bool(payload.get("dry_run", False)),
+        notes=list(payload.get("notes") or []),
+    )
+
+
+def _slice_plan_from_step(plan: ExecutionPlan, step_id: str) -> ExecutionPlan:
+    if not step_id:
+        return plan
+    start_index = 0
+    for index, step in enumerate(plan.steps):
+        if step.id == step_id:
+            start_index = index
+            break
+    return ExecutionPlan(
+        goal=plan.goal,
+        intent=plan.intent,
+        confidence=plan.confidence,
+        required_capabilities=plan.required_capabilities,
+        suggested_executor=plan.suggested_executor,
+        steps=plan.steps[start_index:],
+        supported=plan.supported,
+        dry_run=False,
+        notes=plan.notes,
+    )
+
+
+async def resume_approved_structured_command(
+    approval_id: str,
+    tool_invoker,
+    *,
+    dry_run: bool = False,
+) -> PipelineRunResult:
+    record = get_pending_approval(approval_id)
+    if not record:
+        return PipelineRunResult(
+            handled=True,
+            success=False,
+            reply="Approval request was not found or has expired.",
+        )
+    if record.get("status") != "approved":
+        return PipelineRunResult(
+            handled=True,
+            success=False,
+            reply="Approval request has not been approved.",
+            permission_pending=True,
+        )
+
+    payload = dict(record.get("payload") or {})
+    raw_plan = payload.get("plan")
+    if not isinstance(raw_plan, dict):
+        return PipelineRunResult(
+            handled=True,
+            success=False,
+            reply="Approval request did not include a resumable plan.",
+        )
+
+    plan = execution_plan_from_dict(raw_plan)
+    plan = _slice_plan_from_step(plan, str(payload.get("resume_from_step_id", "")))
     plan = ExecutionPlan(
         goal=plan.goal,
         intent=plan.intent,

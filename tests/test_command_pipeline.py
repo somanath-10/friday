@@ -1,13 +1,14 @@
 import asyncio
 from pathlib import Path
 
-from friday.core.executor import StructuredExecutor, run_structured_command
+from friday.core.executor import StructuredExecutor, resume_approved_structured_command, run_structured_command
 from friday.core.models import ExecutionPlan, IntentRoute, PlanStep
 from friday.core.recovery import choose_recovery_action
 from friday.core.router import route_user_command
 from friday.core.planner import build_execution_plan
 from friday.core.verifier import verify_step
 from friday.path_utils import resolve_user_path
+from friday.safety.approval_gate import resolve_pending_approval
 
 
 class FakeToolInvoker:
@@ -142,6 +143,29 @@ def test_structured_executor_requires_permission_for_delete(mock_workspace):
     assert result.permission_pending is True
     assert not invoker.calls
     assert "[Approval Required]" in result.reply
+    assert result.approval_requests
+    assert result.approval_requests[0]["approval_id"].startswith("apr_")
+
+
+def test_resume_approved_structured_command_runs_pending_step(mock_workspace):
+    route = IntentRoute(
+        intent="files",
+        confidence=0.9,
+        required_capabilities=["filesystem"],
+        likely_risk=3,
+        suggested_executor="files",
+    )
+    plan = build_execution_plan("delete report.md", route)
+    invoker = FakeToolInvoker()
+
+    paused = asyncio.run(StructuredExecutor(invoker).execute(plan))
+    approval_id = paused.approval_requests[0]["approval_id"]
+    resolve_pending_approval(approval_id, "approved")
+    resumed = asyncio.run(resume_approved_structured_command(approval_id, invoker))
+
+    assert resumed.success is True
+    assert invoker.calls
+    assert invoker.calls[0][0] == "delete_path"
 
 
 def test_run_structured_command_dry_run_desktop():

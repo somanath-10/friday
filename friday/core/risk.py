@@ -204,12 +204,20 @@ def classify_tool_call(tool_name: str, arguments: dict[str, Any] | None = None) 
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "git push requires approval.", "git")
     if name == "git_commit":
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "git commit requires approval.", "git")
+    if name in {"read_file", "get_file_contents", "read_file_snippet", "list_directory_tree", "search_in_files", "search_paths_by_name"}:
+        return classify_file_operation("read")
     if name in {"delete_path", "delete_workspace_file"}:
         return classify_file_operation("delete", str(args.get("path") or args.get("filename") or ""))
     if name in {"write_file", "create_document"}:
         return classify_file_operation("overwrite" if args.get("overwrite") else "write_new")
     if name in {"copy_path", "move_path"}:
         return classify_file_operation("move" if name == "move_path" else "copy", overwrite=bool(args.get("overwrite")))
+    if name in {"browser_submit_sensitive_form", "browser_submit_form"}:
+        return classify_browser_action("submit")
+    if name == "browser_download_executable":
+        return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Downloading executable files requires approval.", "browser")
+    if name == "browser_download":
+        return classify_browser_action("download")
     if name.startswith("browser_"):
         if name in {"browser_read_page", "browser_get_state", "browser_navigate"}:
             return classify_browser_action("read")

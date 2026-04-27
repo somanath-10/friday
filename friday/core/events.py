@@ -51,6 +51,12 @@ class EventLog:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
         self._events.append(event)
+        try:
+            from friday.observability.timeline import append_timeline_event
+
+            append_timeline_event(event_type.value, message, **data)
+        except Exception:
+            pass
         return event
 
     def to_list(self) -> list[dict[str, Any]]:

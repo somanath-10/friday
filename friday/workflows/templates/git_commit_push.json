@@ -1,0 +1,1 @@
+{"name": "git_commit_push", "intent": "code", "risk_level": 3, "steps": ["status", "diff", "ask commit approval", "ask push approval"]}

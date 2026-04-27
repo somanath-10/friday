@@ -17,10 +17,14 @@ from urllib.parse import urlsplit
 
 from friday.core.risk import RiskAssessment, RiskLevel, classify_shell_command, classify_tool_call
 from friday.path_utils import resolve_user_path, workspace_dir
+from friday.safety.emergency_stop import is_emergency_stopped
+from friday.safety.policy import evaluate_safety_policy
+from friday.safety.secrets_filter import is_protected_secret_path
 
 
 DEFAULT_PERMISSIONS: dict[str, Any] = {
     "mode": "local_permission_based",
+    "access_mode": "safe",
     "desktop": {
         "enabled": True,
         "inspect_screen": True,
@@ -36,7 +40,7 @@ DEFAULT_PERMISSIONS: dict[str, Any] = {
     },
     "filesystem": {
         "enabled": True,
-        "allowed_roots": ["~/Desktop", "~/Documents", "~/Downloads", "./workspace"],
+        "allowed_roots": ["~/Desktop", "~/Documents", "~/Downloads", "~/Workspace", "./workspace"],
         "protected_paths": ["~/.ssh", "~/.aws", "~/.config", "/etc", "/System"],
         "ask_before_delete": True,
         "ask_before_overwrite": True,
@@ -77,6 +81,9 @@ DEFAULT_PERMISSIONS: dict[str, Any] = {
         "remember_admin_permission_for_minutes": 10,
     },
 }
+
+
+ACCESS_MODES = {"safe", "trusted", "full_control"}
 
 
 @dataclass(frozen=True)
@@ -203,7 +210,31 @@ def load_permissions_config(path: Path | None = None) -> dict[str, Any]:
         parsed = _simple_yaml_load(text)
     if not isinstance(parsed, dict):
         parsed = {}
-    return _merge_dict(DEFAULT_PERMISSIONS, parsed)
+    merged = _merge_dict(DEFAULT_PERMISSIONS, parsed)
+    env_mode = os.getenv("FRIDAY_ACCESS_MODE", "").strip().lower()
+    if env_mode:
+        merged["access_mode"] = env_mode
+    return merged
+
+
+def get_access_mode(config: dict[str, Any] | None = None) -> str:
+    permissions = config or load_permissions_config()
+    mode = str(permissions.get("access_mode") or os.getenv("FRIDAY_ACCESS_MODE") or "safe").strip().lower()
+    return mode if mode in ACCESS_MODES else "safe"
+
+
+def access_mode_summary(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    mode = get_access_mode(config)
+    return {
+        "mode": mode,
+        "description": {
+            "safe": "Workspace-first mode. Sensitive actions ask, dangerous actions are blocked.",
+            "trusted": "Desktop, browser, filesystem, and shell are enabled with approvals for sensitive actions.",
+            "full_control": "Broad local access can be requested, but Level 3 still asks and Level 4 remains blocked.",
+        }[mode],
+        "requires_approval_for_level_3": True,
+        "blocks_level_4": True,
+    }
 
 
 def _expand_path(raw_path: str) -> Path:
@@ -228,6 +259,8 @@ def _protected_path_reason(path_text: str, config: dict[str, Any]) -> str:
         target = resolve_user_path(path_text)
     except Exception:
         target = _expand_path(path_text)
+    if is_protected_secret_path(target):
+        return f"Path is protected because it appears to contain credentials or secrets: {target}"
     protected = config.get("filesystem", {}).get("protected_paths", [])
     for raw_root in protected:
         root = _expand_path(str(raw_root))
@@ -258,6 +291,29 @@ def permission_for_assessment(
     config: dict[str, Any] | None = None,
 ) -> PermissionDecision:
     permissions = config or load_permissions_config()
+    if is_emergency_stopped():
+        return PermissionDecision(
+            "block",
+            "Emergency stop is active; clear it before running more local actions.",
+            RiskLevel.DANGEROUS_RESTRICTED,
+            RiskLevel.DANGEROUS_RESTRICTED.name,
+            assessment.category,
+            action,
+            subject,
+        )
+
+    policy_decision = evaluate_safety_policy(action, {"subject": subject, "category": assessment.category})
+    if policy_decision.decision == "block":
+        return PermissionDecision(
+            "block",
+            policy_decision.reason,
+            RiskLevel.DANGEROUS_RESTRICTED,
+            RiskLevel.DANGEROUS_RESTRICTED.name,
+            assessment.category,
+            action,
+            subject,
+        )
+    access_mode = get_access_mode(permissions)
 
     if assessment.level >= RiskLevel.DANGEROUS_RESTRICTED:
         return PermissionDecision(
@@ -286,11 +342,33 @@ def permission_for_assessment(
         if not _filesystem_allowed(subject, permissions):
             return PermissionDecision("ask", "Path is outside configured allowed roots.", assessment.level, assessment.label, "files", action, subject)
 
+    if access_mode == "safe" and assessment.category == "shell" and assessment.level >= RiskLevel.SENSITIVE_ACTION:
+        return PermissionDecision("ask", "Safe mode requires approval for sensitive shell actions.", assessment.level, assessment.label, assessment.category, action, subject)
+
     if assessment.level <= RiskLevel.SAFE_WRITE:
         return PermissionDecision("allow", assessment.reason, assessment.level, assessment.label, assessment.category, action, subject)
 
     if assessment.level == RiskLevel.REVERSIBLE_CHANGE:
         return PermissionDecision("allow", assessment.reason, assessment.level, assessment.label, assessment.category, action, subject)
+
+    from friday.safety.approval_gate import approval_key_for, consume_approval_key, has_session_approval
+
+    approval_key = approval_key_for(
+        action=action,
+        category=assessment.category,
+        subject=subject,
+        risk_level=int(assessment.level),
+    )
+    if consume_approval_key(approval_key) or has_session_approval(assessment.category):
+        return PermissionDecision(
+            "allow",
+            f"Approved by user: {assessment.reason}",
+            assessment.level,
+            assessment.label,
+            assessment.category,
+            action,
+            subject,
+        )
 
     return PermissionDecision("ask", assessment.reason, assessment.level, assessment.label, assessment.category, action, subject)
 

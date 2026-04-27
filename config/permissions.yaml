@@ -1,4 +1,5 @@
 mode: local_permission_based
+access_mode: safe
 
 desktop:
   enabled: true
@@ -19,6 +20,7 @@ filesystem:
     - "~/Desktop"
     - "~/Documents"
     - "~/Downloads"
+    - "~/Workspace"
     - "./workspace"
   protected_paths:
     - "~/.ssh"

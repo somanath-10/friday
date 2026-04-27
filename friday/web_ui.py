@@ -23,9 +23,13 @@ import friday.config as friday_config
 from friday.core.executor import run_command_pipeline
 from friday.local_chat import (
     local_greeting,
+    resume_approved_local_action,
     run_local_chat,
     transcribe_browser_audio,
 )
+from friday.observability.timeline import read_timeline_events
+from friday.safety.approval_gate import list_pending_approvals, resolve_pending_approval
+from friday.safety.emergency_stop import clear_emergency_stop, emergency_stop_status, trigger_emergency_stop
 from friday.tools import get_tool_module_status
 
 
@@ -123,6 +127,8 @@ def _local_status(request: Request | None = None) -> dict[str, Any]:
             "ready": diagnostics["chat_ready"],
             "greeting": local_greeting(),
             "codex_relay": codex_status,
+            "timeline_events": read_timeline_events(limit=20),
+            "emergency_stop": diagnostics.get("emergency_stop", emergency_stop_status()),
             "legacy_livekit_configured": bool(
                 os.getenv("LIVEKIT_URL") and os.getenv("LIVEKIT_API_KEY") and os.getenv("LIVEKIT_API_SECRET")
             ),
@@ -137,6 +143,7 @@ def _render_page(request: Request) -> str:
     server_name = html.escape(state["server_name"])
     mcp_server_url = html.escape(state["mcp_server_url"])
     llm_label = html.escape(f"{state['llm_provider']} / {state['llm_model']}")
+    access_mode = html.escape(str(state.get("access_mode", "safe")))
     greeting = html.escape(state["greeting"])
     readiness = "Ready" if state["ready"] else "Needs Config"
     readiness_class = "ready" if state["ready"] else "warn"
@@ -508,6 +515,31 @@ def _render_page(request: Request) -> str:
         border-color: rgba(255, 200, 87, 0.36);
       }}
 
+      .approval-box {{
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 14px;
+        background: rgba(255, 200, 87, 0.1);
+        border: 1px solid rgba(255, 200, 87, 0.28);
+        color: var(--muted);
+      }}
+
+      .approval-box strong {{
+        color: var(--warn);
+      }}
+
+      .approval-actions {{
+        margin-top: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }}
+
+      .approval-actions .button {{
+        padding: 9px 12px;
+        font-size: 0.88rem;
+      }}
+
       .composer {{
         padding: 16px;
         border-radius: 22px;
@@ -623,6 +655,20 @@ def _render_page(request: Request) -> str:
       .side-card ul {{
         margin: 0;
         padding-left: 18px;
+      }}
+
+      .timeline-list {{
+        display: grid;
+        gap: 8px;
+        max-height: 220px;
+        overflow-y: auto;
+      }}
+
+      .timeline-item {{
+        padding: 8px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+        color: var(--muted);
+        line-height: 1.45;
       }}
 
       .mini {{
@@ -768,6 +814,21 @@ def _render_page(request: Request) -> str:
             </section>
 
             <section class="side-card">
+              <h3>Access Mode</h3>
+              <p class="mini footer-note">Mode: <span id="access-mode-label">{access_mode}</span></p>
+              <p class="mini footer-note" id="stop-status">Emergency stop: clear</p>
+              <div class="composer-actions">
+                <button class="button button-secondary" id="emergency-stop-button" type="button">Emergency Stop</button>
+                <button class="button button-secondary" id="clear-stop-button" type="button">Clear Stop</button>
+              </div>
+            </section>
+
+            <section class="side-card">
+              <h3>Action Timeline</h3>
+              <div class="timeline-list" id="timeline-list"></div>
+            </section>
+
+            <section class="side-card">
               <h3>Codex Relay</h3>
               <p class="mini" id="codex-status-note">{html.escape(codex_status_text)}</p>
               <p class="mini footer-note">Status: <span id="codex-status-label">{html.escape(codex_status_label)}</span></p>
@@ -799,7 +860,7 @@ def _render_page(request: Request) -> str:
         speakReplies: true,
         dispatchMode: "friday",
         messages: [
-          {{ role: "assistant", content: initialGreeting, toolEvents: [] }}
+          {{ role: "assistant", content: initialGreeting, toolEvents: [], approvalRequests: [] }}
         ],
       }};
 
@@ -817,6 +878,11 @@ def _render_page(request: Request) -> str:
       const codexStatusLabel = document.getElementById("codex-status-label");
       const issueList = document.getElementById("issue-list");
       const readinessPill = document.getElementById("readiness-pill");
+      const accessModeLabel = document.getElementById("access-mode-label");
+      const stopStatus = document.getElementById("stop-status");
+      const emergencyStopButton = document.getElementById("emergency-stop-button");
+      const clearStopButton = document.getElementById("clear-stop-button");
+      const timelineList = document.getElementById("timeline-list");
 
       let mediaRecorder = null;
       let mediaStream = null;
@@ -864,11 +930,31 @@ def _render_page(request: Request) -> str:
                 return `<span class="${{chipClass}}"${{chipTitle}}>${{chipLabel}}</span>`;
               }}).join("")}}</div>`
             : "";
+          const approvals = Array.isArray(message.approvalRequests) && message.approvalRequests.length
+            ? message.approvalRequests.map((approval) => {{
+                const risk = escapeHtml(String(approval.risk_label || `Level ${{approval.risk_level || "?"}}`));
+                const summary = escapeHtml(String(approval.action_summary || approval.tool || "Local action"));
+                const reason = escapeHtml(String(approval.risk_explanation || approval.decision_reason || ""));
+                const id = escapeHtml(String(approval.approval_id || ""));
+                return `
+                  <div class="approval-box" data-approval-box="${{id}}">
+                    <strong>Approval required</strong><br>
+                    <span>${{summary}}</span><br>
+                    <span>${{risk}}${{reason ? `: ${{reason}}` : ""}}</span>
+                    <div class="approval-actions">
+                      <button class="button button-primary" type="button" data-approval-action="approve" data-approval-id="${{id}}">Approve Once</button>
+                      <button class="button button-secondary" type="button" data-approval-action="deny" data-approval-id="${{id}}">Deny</button>
+                    </div>
+                  </div>
+                `;
+              }}).join("")
+            : "";
           return `
             <article class="message ${{message.role}}">
               <span class="message-label">${{label}}</span>
               <div>${{escapeHtml(message.content)}}</div>
               ${{toolEvents}}
+              ${{approvals}}
             </article>
           `;
         }}).join("");
@@ -900,8 +986,8 @@ def _render_page(request: Request) -> str:
         setBusy(appState.busy);
       }}
 
-      function addMessage(role, content, toolEvents = []) {{
-        appState.messages.push({{ role, content, toolEvents }});
+      function addMessage(role, content, toolEvents = [], approvalRequests = []) {{
+        appState.messages.push({{ role, content, toolEvents, approvalRequests }});
         if (appState.messages.length > 18) {{
           appState.messages = appState.messages.slice(-18);
         }}
@@ -961,6 +1047,11 @@ def _render_page(request: Request) -> str:
 
           document.getElementById("mcp-url").textContent = status.mcp_server_url;
           document.getElementById("llm-label").textContent = `${{status.llm_provider}} / ${{status.llm_model}}`;
+          accessModeLabel.textContent = status.access_mode || "safe";
+          const stop = status.emergency_stop || {{}};
+          stopStatus.textContent = stop.stopped
+            ? `Emergency stop: active (${{stop.reason || "no reason"}})`
+            : "Emergency stop: clear";
 
           document.querySelectorAll("[data-copy]").forEach((button) => {{
             if (button.dataset.copy === {json.dumps(state["mcp_server_url"])}) {{
@@ -971,6 +1062,67 @@ def _render_page(request: Request) -> str:
           setBusy(appState.busy);
         }} catch (error) {{
           console.error("Status refresh failed", error);
+        }}
+      }}
+
+      async function refreshTimeline() {{
+        try {{
+          const response = await fetch("/api/timeline", {{ headers: {{ "Accept": "application/json" }} }});
+          const payload = await response.json();
+          const events = Array.isArray(payload.events) ? payload.events : [];
+          timelineList.innerHTML = events.length
+            ? events.slice(-12).map((event) => {{
+                const type = escapeHtml(String(event.event_type || "event"));
+                const message = escapeHtml(String(event.message || ""));
+                return `<div class="timeline-item"><strong>${{type}}</strong><br>${{message}}</div>`;
+              }}).join("")
+            : `<div class="timeline-item">No actions recorded yet.</div>`;
+        }} catch (error) {{
+          timelineList.innerHTML = `<div class="timeline-item">Timeline unavailable.</div>`;
+        }}
+      }}
+
+      async function setEmergencyStop(action) {{
+        try {{
+          const response = await fetch("/api/emergency-stop", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ action, reason: "Pressed from local UI" }}),
+          }});
+          await response.json();
+          await refreshStatus();
+        }} catch (error) {{
+          console.error("Emergency stop update failed", error);
+        }}
+      }}
+
+      async function respondToApproval(approvalId, decision) {{
+        if (!approvalId || appState.busy) {{
+          return;
+        }}
+
+        setBusy(true);
+        try {{
+          const response = await fetch("/api/approvals/respond", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ approval_id: approvalId, decision }}),
+          }});
+          const data = await response.json();
+          if (!response.ok) {{
+            addMessage("system", data.error || "Approval response failed.");
+          }} else {{
+            addMessage("assistant", data.reply || "Approval response recorded.", data.tool_events || [], data.approval_requests || []);
+            if (decision === "approve") {{
+              speakReply(data.reply || "");
+            }}
+          }}
+        }} catch (error) {{
+          addMessage("system", "The approval route could not be reached.");
+          console.error("Approval response failed", error);
+        }} finally {{
+          setBusy(false);
+          await refreshTimeline();
         }}
       }}
 
@@ -1026,7 +1178,7 @@ def _render_page(request: Request) -> str:
             addMessage("system", data.error || "The local chat route failed.");
           }} else {{
             const reply = data.reply || "I did not get a usable reply back.";
-            addMessage("assistant", reply, data.tool_events || []);
+            addMessage("assistant", reply, data.tool_events || [], data.approval_requests || []);
             speakReply(data.reply || "");
           }}
         }} catch (error) {{
@@ -1493,6 +1645,19 @@ def _render_page(request: Request) -> str:
         }}
       }});
 
+      messageLog.addEventListener("click", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {{
+          return;
+        }}
+        const approvalId = target.dataset.approvalId || "";
+        const action = target.dataset.approvalAction || "";
+        if (!approvalId || !action) {{
+          return;
+        }}
+        respondToApproval(approvalId, action === "approve" ? "approve" : "deny");
+      }});
+
       micButton.addEventListener("click", async () => {{
         if (!supportsRecordedMic() || appState.busy || appState.micStarting) {{
           return;
@@ -1524,12 +1689,17 @@ def _render_page(request: Request) -> str:
         }}
       }});
 
+      emergencyStopButton.addEventListener("click", () => setEmergencyStop("trigger"));
+      clearStopButton.addEventListener("click", () => setEmergencyStop("clear"));
+
       setupMicrophone();
       updateComposerMode();
       renderMessages();
       refreshStatus();
+      refreshTimeline();
       setBusy(false);
       window.setInterval(refreshStatus, 15000);
+      window.setInterval(refreshTimeline, 3000);
     </script>
   </body>
 </html>
@@ -1584,6 +1754,8 @@ def register_web_routes(mcp) -> None:
             {
                 "reply": result.reply,
                 "tool_events": result.tool_events,
+                "pipeline_events": result.pipeline_events,
+                "approval_requests": result.approval_requests,
             }
         )
 
@@ -1603,6 +1775,82 @@ def register_web_routes(mcp) -> None:
 
         result = run_command_pipeline(command, dry_run=True)
         return JSONResponse(result.to_dict())
+
+    @mcp.custom_route("/api/timeline", methods=["GET"], include_in_schema=False)
+    async def timeline_api(request: Request) -> Response:
+        if _needs_browser_redirect(request):
+            return RedirectResponse(f"{_browser_base_url(request)}/", status_code=307)
+        return JSONResponse({"events": read_timeline_events(limit=100)})
+
+    @mcp.custom_route("/api/approvals", methods=["GET"], include_in_schema=False)
+    async def approvals_api(request: Request) -> Response:
+        if _needs_browser_redirect(request):
+            return RedirectResponse(f"{_browser_base_url(request)}/", status_code=307)
+        return JSONResponse({"approvals": list_pending_approvals()})
+
+    @mcp.custom_route("/api/approvals/respond", methods=["POST"], include_in_schema=False)
+    async def approval_response_api(request: Request) -> Response:
+        if _needs_browser_redirect(request):
+            return RedirectResponse(f"{_browser_base_url(request)}/", status_code=307)
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
+
+        approval_id = str(payload.get("approval_id", "")).strip()
+        decision = str(payload.get("decision", "")).strip().lower()
+        if not approval_id:
+            return JSONResponse({"error": "approval_id is required."}, status_code=400)
+        if decision not in {"approve", "approved", "deny", "denied"}:
+            return JSONResponse({"error": "decision must be approve or deny."}, status_code=400)
+
+        normalized = "approved" if decision in {"approve", "approved"} else "denied"
+        record = resolve_pending_approval(
+            approval_id,
+            normalized,
+            approval_mode=str(payload.get("approval_mode", "one_time")),
+        )
+        if record is None:
+            return JSONResponse({"error": "Approval request was not found."}, status_code=404)
+        if normalized == "denied":
+            return JSONResponse(
+                {
+                    "reply": "Permission denied. I stopped before running that action.",
+                    "tool_events": [],
+                    "pipeline_events": [],
+                    "approval_requests": [],
+                }
+            )
+
+        try:
+            result = await resume_approved_local_action(approval_id, _mcp_server_url(request))
+        except Exception as exc:  # pragma: no cover - defensive route guard
+            logger.exception("Approval resume failed")
+            return JSONResponse({"error": f"Approval resume failed: {exc}"}, status_code=500)
+
+        return JSONResponse(
+            {
+                "reply": result.reply,
+                "tool_events": result.tool_events,
+                "pipeline_events": result.pipeline_events,
+                "approval_requests": result.approval_requests,
+            }
+        )
+
+    @mcp.custom_route("/api/emergency-stop", methods=["POST"], include_in_schema=False)
+    async def emergency_stop_api(request: Request) -> Response:
+        if _needs_browser_redirect(request):
+            return RedirectResponse(f"{_browser_base_url(request)}/", status_code=307)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        action = str(payload.get("action", "trigger")).strip().lower()
+        if action == "clear":
+            clear_emergency_stop()
+        else:
+            trigger_emergency_stop(str(payload.get("reason", "user_requested")))
+        return JSONResponse({"emergency_stop": emergency_stop_status()})
 
     @mcp.custom_route("/api/transcribe", methods=["POST"], include_in_schema=False)
     async def local_transcribe_api(request: Request) -> Response:

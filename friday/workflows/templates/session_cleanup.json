@@ -1,0 +1,1 @@
+{"name": "session_cleanup", "intent": "system", "risk_level": 2, "steps": ["summarize session", "save trace", "close optional resources"]}

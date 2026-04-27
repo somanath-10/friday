@@ -1,0 +1,1 @@
+{"name": "organize_downloads", "intent": "files", "risk_level": 2, "steps": ["preview files", "ask if destructive", "move with backups"]}

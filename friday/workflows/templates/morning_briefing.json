@@ -1,0 +1,1 @@
+{"name": "morning_briefing", "intent": "research", "risk_level": 1, "steps": ["collect calendar/weather/news", "summarize", "save briefing"]}

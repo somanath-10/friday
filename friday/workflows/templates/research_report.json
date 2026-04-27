@@ -1,0 +1,1 @@
+{"name": "research_report", "intent": "research", "risk_level": 1, "steps": ["search", "fetch sources", "write cited markdown report"]}

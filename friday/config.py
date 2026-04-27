@@ -159,6 +159,9 @@ class ConfigDiagnostics:
     warnings: list[str]
     next_steps: list[str]
     chat_ready: bool
+    access_mode: str
+    permissions_summary: dict[str, Any]
+    emergency_stop: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -228,6 +231,12 @@ def build_config_diagnostics(
             "run `run_permission_diagnostics` if screen/app control fails."
         )
 
+    from friday.core.permissions import access_mode_summary
+    from friday.safety.emergency_stop import emergency_stop_status
+
+    permissions_summary = access_mode_summary()
+    if permissions_summary["mode"] == "full_control":
+        warnings.append("FRIDAY_ACCESS_MODE=full_control is active. Sensitive actions still require approval and dangerous actions remain blocked.")
     if not next_steps and not setup_issues:
         next_steps.append(f"Open http://127.0.0.1:{port}/ for the local browser console.")
 
@@ -253,6 +262,9 @@ def build_config_diagnostics(
         warnings=warnings,
         next_steps=next_steps,
         chat_ready=chat_ready,
+        access_mode=str(permissions_summary["mode"]),
+        permissions_summary=permissions_summary,
+        emergency_stop=emergency_stop_status(),
     )
 
 
@@ -359,6 +371,13 @@ def build_runtime_status() -> dict[str, Any]:
     if conflicting_override:
         warnings.append("MCP_SERVER_URL does not match the local host/port settings.")
 
+    from friday.core.permissions import access_mode_summary
+    from friday.safety.emergency_stop import emergency_stop_status
+
+    permissions_summary = access_mode_summary()
+    if permissions_summary["mode"] == "full_control":
+        warnings.append("FRIDAY_ACCESS_MODE=full_control is active. Sensitive actions still require approval and dangerous actions remain blocked.")
+
     workspace = workspace_dir()
     app_ready = not setup_issues
     return {
@@ -384,6 +403,9 @@ def build_runtime_status() -> dict[str, Any]:
         "warnings": warnings,
         "next_steps": next_steps,
         "chat_ready": app_ready,
+        "access_mode": permissions_summary["mode"],
+        "permissions_summary": permissions_summary,
+        "emergency_stop": emergency_stop_status(),
         "diagnostics": {
             "transport": {
                 "configured_mcp_server_url": configured_mcp_server_url,
