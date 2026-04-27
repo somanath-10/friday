@@ -45,9 +45,14 @@ RISK_LABELS = {
 DANGEROUS_SHELL_PATTERNS = (
     "rm -rf /",
     "rm -fr /",
+    "del /s /q c:\\",
+    "remove-item -recurse -force c:\\",
+    "remove-item -recurse -force $env:userprofile",
+    "remove-item -recurse -force %userprofile%",
     "mkfs",
     "diskpart",
     "format ",
+    "format c:",
     "dd if=",
     ":(){",
     "chmod -r 777 /",
@@ -56,6 +61,9 @@ DANGEROUS_SHELL_PATTERNS = (
     "reboot",
     "halt",
     "disable-firewall",
+    "disable-windowsoptionalfeature",
+    "set-mppreference",
+    "windefend",
     "set-mppreference",
     "security dump-keychain",
 )
@@ -68,6 +76,7 @@ SENSITIVE_SHELL_TOKENS = {
     "rmdir",
     "del",
     "erase",
+    "remove-item",
     "format",
     "git push",
     "git commit",
@@ -78,6 +87,7 @@ SENSITIVE_SHELL_TOKENS = {
     "apt install",
     "apt-get install",
     "winget install",
+    "set-executionpolicy",
     "defaults write",
     "systemctl",
     "launchctl",
@@ -180,6 +190,24 @@ def classify_shell_command(command: str) -> RiskAssessment:
             "Recursive forced deletion is restricted.",
             "shell",
         )
+    if normalized.startswith("del /s /q c:\\") or normalized.startswith("remove-item -recurse -force c:\\"):
+        return RiskAssessment(
+            RiskLevel.DANGEROUS_RESTRICTED,
+            "Recursive deletion of the system drive is restricted.",
+            "shell",
+        )
+    if "remove-item -recurse -force $env:userprofile" in normalized or "remove-item -recurse -force %userprofile%" in normalized:
+        return RiskAssessment(
+            RiskLevel.DANGEROUS_RESTRICTED,
+            "Recursive deletion of the user profile is restricted.",
+            "shell",
+        )
+    if "set-mppreference" in normalized or "windefend" in normalized:
+        return RiskAssessment(
+            RiskLevel.DANGEROUS_RESTRICTED,
+            "Commands that disable or tamper with Windows security tools are restricted.",
+            "shell",
+        )
 
     if any(marker in normalized for marker in ("|", ";", "&&", "||", "$(", "`")):
         return RiskAssessment(RiskLevel.REVERSIBLE_CHANGE, "Compound shell command requires conservative handling.", "shell")
@@ -192,9 +220,9 @@ def classify_shell_command(command: str) -> RiskAssessment:
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Installing software/packages requires approval.", "shell")
     if normalized.startswith(("sudo ", "su ", "doas ")):
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Elevated/admin command requires approval.", "shell")
-    if normalized.startswith(("rm ", "rmdir ", "del ", "erase ")):
+    if normalized.startswith(("rm ", "rmdir ", "del ", "erase ", "remove-item ")):
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Delete command requires approval.", "shell")
-    if any(token in normalized for token in (" > ", ">>", "mv ", "cp ", "chmod ", "chown ", "git add")):
+    if any(token in normalized for token in (" > ", ">>", "mv ", "cp ", "chmod ", "chown ", "git add", "move-item ", "copy-item ", "ren ")):
         return RiskAssessment(RiskLevel.REVERSIBLE_CHANGE, "Command may modify files or permissions.", "shell")
 
     parts = _command_parts(command)
@@ -209,7 +237,7 @@ def classify_shell_command(command: str) -> RiskAssessment:
     if first in {"pwd", "ls", "dir", "whoami", "id", "date", "cat", "head", "tail", "wc", "rg", "grep"}:
         return RiskAssessment(RiskLevel.READ_ONLY, "Command appears read-only.", "shell")
 
-    if first in {"python", "python3", "py", "node", "npm", "uv", "git"}:
+    if first in {"python", "python3", "py", "node", "npm", "uv", "git", "powershell", "pwsh", "cmd"}:
         return RiskAssessment(
             RiskLevel.REVERSIBLE_CHANGE,
             "Interpreter/package/git command may change local state unless it is a recognized read-only/test command.",
@@ -274,6 +302,8 @@ def classify_tool_call(tool_name: str, arguments: dict[str, Any] | None = None) 
         return classify_file_operation("mkdir")
     if name == "append_to_file":
         return classify_file_operation("append")
+    if name in {"open_path", "open_in_finder"}:
+        return classify_file_operation("read")
     if name in {"write_file", "create_document"}:
         operation = str(args.get("operation", "")).strip().lower()
         if operation == "append":

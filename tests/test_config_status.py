@@ -73,12 +73,20 @@ def test_status_payload_contains_phase1_fields(monkeypatch, tmp_path, mocker):
         "workspace_path",
         "python_version",
         "os",
+        "is_windows",
+        "windows_version",
         "llm_provider",
         "llm_model",
         "openai_configured",
         "voice_configured",
         "browser_automation_ready",
         "desktop_control_ready",
+        "pywinauto_available",
+        "pyautogui_available",
+        "playwright_available",
+        "chrome_available",
+        "edge_available",
+        "powershell_available",
         "enabled_tool_modules",
         "disabled_tool_modules",
         "setup_issues",
@@ -92,3 +100,6 @@ def test_status_payload_contains_phase1_fields(monkeypatch, tmp_path, mocker):
     assert payload["disabled_tool_modules"] == [
         {"module": "friday.tools.optional", "error": "missing dep"}
     ]
+    if not payload["is_windows"]:
+        assert payload["desktop_control_ready"] is False
+        assert any("Windows only" in step for step in payload["next_steps"])

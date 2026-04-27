@@ -13,6 +13,13 @@ def test_router_detects_core_intents():
     assert route_intent("open chrome and login to portal").intent == Intent.BROWSER
 
 
+def test_router_treats_explorer_folder_open_as_file_task():
+    result = route_intent("open desktop in file explorer")
+
+    assert result.intent == Intent.FILES
+    assert result.suggested_executor == "files"
+
+
 def test_planner_marks_git_push_for_approval():
     plan = create_plan("commit and push changes")
 
@@ -63,6 +70,14 @@ def test_planner_preserves_desktop_type_text():
     assert plan.steps[1].parameters["text"] == "meeting notes"
 
 
+def test_planner_creates_open_path_for_windows_folder_open():
+    plan = create_plan("open desktop in file explorer")
+
+    assert plan.intent.intent == Intent.FILES
+    assert plan.steps[0].action_type == "open_path"
+    assert plan.steps[0].parameters["path"] == "Desktop"
+
+
 def test_pipeline_can_execute_safe_file_write(monkeypatch, tmp_path):
     monkeypatch.setenv("FRIDAY_WORKSPACE_DIR", str(tmp_path))
 
@@ -71,3 +86,12 @@ def test_pipeline_can_execute_safe_file_write(monkeypatch, tmp_path):
     assert result.status == "completed"
     assert result.step_results[0].status == "succeeded"
     assert (tmp_path / "generated_by_friday.txt").exists()
+
+
+def test_pipeline_folder_open_is_a_file_workflow(monkeypatch, tmp_path):
+    monkeypatch.setenv("FRIDAY_WORKSPACE_DIR", str(tmp_path))
+
+    result = run_command_pipeline("open desktop in file explorer", dry_run=True)
+
+    assert result.plan.intent.intent == Intent.FILES
+    assert result.plan.steps[0].action_type == "open_path"

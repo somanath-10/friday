@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import platform
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from friday.subprocess_utils import run_powershell
 from friday.safety.secrets_filter import redact_text
 from friday.shell.command_policy import sanitize_environment
 
@@ -34,6 +36,24 @@ def run_terminal_command(
     max_output_chars: int = 8000,
 ) -> TerminalResult:
     try:
+        if platform.system() == "Windows":
+            lowered = command.strip().lower()
+            if lowered.startswith(("powershell ", "pwsh ")) or any(
+                marker in lowered
+                for marker in ("get-childitem", "get-location", "remove-item", "set-executionpolicy", "$env:")
+            ):
+                script = command
+                if lowered.startswith("powershell "):
+                    script = command.split(None, 1)[1] if len(command.split(None, 1)) == 2 else ""
+                result = run_powershell(script, timeout=max(1, timeout_seconds), no_profile=False, force_utf8=True)
+                stdout = redact_text(result.stdout or "")
+                stderr = redact_text(result.stderr or "")
+                if len(stdout) > max_output_chars:
+                    stdout = stdout[:max_output_chars] + "\n... [truncated]"
+                if len(stderr) > max_output_chars:
+                    stderr = stderr[:max_output_chars] + "\n... [truncated]"
+                return TerminalResult(result.returncode, stdout, stderr)
+
         result = subprocess.run(
             command,
             shell=True,

@@ -24,6 +24,10 @@ class FakeToolInvoker:
             path.write_text(str(params["content"]), encoding="utf-8")
             return f"Written to: {path}"
 
+        if tool_name == "open_path":
+            path = resolve_user_path(str(params["path"]))
+            return f"Opened folder view: {path}"
+
         if tool_name == "run_shell_command":
             return "================ 73 passed in 4.35s ================"
 
@@ -189,6 +193,25 @@ def test_build_execution_plan_preserves_unquoted_type_text():
     assert plan.supported is True
     assert plan.steps[0].tool_name == "open_application"
     assert plan.steps[1].parameters["text"] == "meeting notes"
+
+
+def test_build_execution_plan_for_explorer_folder_open():
+    route = route_user_command("open desktop in file explorer")
+    plan = build_execution_plan("open desktop in file explorer", route)
+
+    assert plan.supported is True
+    assert plan.intent == "files"
+    assert plan.steps[0].tool_name == "open_path"
+    assert plan.steps[0].parameters["path"] == "Desktop"
+
+
+def test_build_execution_plan_for_open_chrome_uses_app_open_step():
+    route = route_user_command("open chrome")
+    plan = build_execution_plan("open chrome", route)
+
+    assert plan.supported is True
+    assert plan.steps[0].tool_name == "open_application"
+    assert plan.steps[0].parameters["app_name"] == "Chrome"
 
 
 def test_run_structured_command_executes_and_verifies_file_write(mock_workspace):

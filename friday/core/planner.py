@@ -27,6 +27,10 @@ SPECIAL_PATH_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("downloads", "download folder", "download directory"), "Downloads"),
     (("documents", "document folder", "document directory"), "Documents"),
     (("desktop",), "Desktop"),
+    (("pictures", "picture folder", "photos"), "Pictures"),
+    (("videos", "video folder"), "Videos"),
+    (("music", "songs"), "Music"),
+    (("home", "user folder"), "home"),
     (("reports folder", "report folder", "reports directory"), "workspace/reports"),
     (("workspace", "work space"), "workspace"),
 )
@@ -37,7 +41,10 @@ APP_ALIASES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("edge", "microsoft edge"), "Edge"),
     (("vscode", "vs code", "visual studio code"), "Visual Studio Code"),
     (("calculator", "calc"), "Calculator"),
-    (("terminal", "command prompt", "powershell"), "Terminal"),
+    (("file explorer", "explorer"), "File Explorer"),
+    (("terminal",), "Windows Terminal"),
+    (("command prompt", "cmd"), "Command Prompt"),
+    (("powershell",), "Windows PowerShell"),
 )
 
 
@@ -110,6 +117,15 @@ def _extract_move_paths(message: str) -> tuple[str, str]:
     return source, destination
 
 
+def _is_folder_open_request(message: str) -> bool:
+    lowered = message.lower()
+    if not any(marker in lowered for marker in ("open", "show", "reveal")):
+        return False
+    if "file explorer" in lowered or " in explorer" in lowered or " folder" in lowered:
+        return True
+    return any(marker in lowered for marker in ("desktop", "downloads", "documents", "pictures", "videos", "music", "workspace")) and "type " not in lowered
+
+
 def _extract_app_name(message: str) -> str:
     lowered = message.lower()
     for markers, app_name in APP_ALIASES:
@@ -143,8 +159,33 @@ def _extract_type_text(message: str) -> str:
     return text.strip(" .,;:") or "hello"
 
 
+def _extract_browser_name(message: str) -> str:
+    lowered = message.lower()
+    if "edge" in lowered:
+        return "Edge"
+    if "chrome" in lowered:
+        return "Chrome"
+    return "Browser"
+
+
 def _file_plan(message: str, intent: IntentResult) -> list[PlanStep]:
     lowered = message.lower()
+    if _is_folder_open_request(message) and any(word in lowered for word in ("open", "show", "reveal")):
+        assessment = classify_file_operation("read")
+        return [
+            _step(
+                1,
+                description="Open the requested folder in Windows File Explorer after safe path resolution.",
+                executor="files",
+                action_type="open_path",
+                parameters={"path": _extract_path_hint(message) or _special_path_from_text(message) or "workspace"},
+                expected_result="The folder opens in File Explorer.",
+                risk_level=assessment.level,
+                needs_approval=False,
+                verification_method="file_exists",
+            )
+        ]
+
     if any(word in lowered for word in ("list", "show files", "tree")) and "delete" not in lowered:
         assessment = classify_file_operation("list")
         return [
@@ -230,6 +271,8 @@ def _file_plan(message: str, intent: IntentResult) -> list[PlanStep]:
 
 def _shell_or_code_plan(message: str, intent: IntentResult) -> list[PlanStep]:
     lowered = message.lower()
+    if lowered.startswith("open ") and any(term in lowered for term in ("powershell", "cmd", "command prompt", "terminal")):
+        return _desktop_plan(message)
     if "push" in lowered:
         command = "git push"
     elif "commit" in lowered:
@@ -255,6 +298,23 @@ def _shell_or_code_plan(message: str, intent: IntentResult) -> list[PlanStep]:
 
 
 def _desktop_plan(message: str) -> list[PlanStep]:
+    lowered = message.lower()
+    if "screenshot" in lowered or "screen" in lowered and "error" in lowered:
+        assessment = classify_desktop_action("inspect_screen")
+        return [
+            _step(
+                1,
+                description="Capture and inspect the screen before giving a local error-analysis response.",
+                executor="desktop",
+                action_type="inspect_screen",
+                parameters={"question": message},
+                expected_result="A screenshot artifact is saved and any available analysis is returned.",
+                risk_level=assessment.level,
+                needs_approval=False,
+                verification_method="output_nonempty",
+            )
+        ]
+
     assessment = classify_desktop_action("open_app")
     app_name = _extract_app_name(message)
     steps = [
@@ -292,12 +352,32 @@ def _browser_or_research_plan(message: str, intent: IntentResult) -> list[PlanSt
     lowered = message.lower()
     executor = "research" if intent.intent == Intent.RESEARCH else "browser"
     steps: list[PlanStep] = []
+    mentions_browser_app = any(name in lowered for name in ("chrome", "edge"))
+    browser_task_markers = ("search", "go to", "visit", "website", "url", "login", "bank", "http://", "https://", "latest", "news", "page")
+    if mentions_browser_app:
+        launch_assessment = classify_desktop_action("open_app")
+        steps.append(
+            _step(
+                1,
+                description="Open the requested browser application before the web task.",
+                executor="desktop",
+                action_type="open_app",
+                parameters={"app_name": _extract_browser_name(message)},
+                expected_result="The requested browser window is open and available.",
+                risk_level=launch_assessment.level,
+                needs_approval=False,
+                verification_method="window_active",
+            )
+        )
+    if mentions_browser_app and not any(marker in lowered for marker in browser_task_markers):
+        return steps
     if any(word in lowered for word in ("login", "password", "submit", "send", "purchase", "payment")):
         read_assessment = classify_browser_action("navigate")
         sensitive = classify_browser_action("submit")
         return [
+            *steps,
             _step(
-                1,
+                len(steps) + 1,
                 description="Open or observe the requested browser destination before any sensitive action.",
                 executor="browser",
                 action_type="browser_observe",
@@ -308,7 +388,7 @@ def _browser_or_research_plan(message: str, intent: IntentResult) -> list[PlanSt
                 verification_method="text_contains",
             ),
             _step(
-                2,
+                len(steps) + 2,
                 description="Stop and request approval before entering credentials or submitting a form.",
                 executor="browser",
                 action_type="browser_submit_form",
@@ -323,7 +403,7 @@ def _browser_or_research_plan(message: str, intent: IntentResult) -> list[PlanSt
     assessment = classify_browser_action("read")
     steps.append(
         _step(
-            1,
+            len(steps) + 1,
             description="Observe or search the requested web content before taking actions.",
             executor=executor,
             action_type="browser_observe",
@@ -338,7 +418,7 @@ def _browser_or_research_plan(message: str, intent: IntentResult) -> list[PlanSt
         file_assessment = classify_file_operation("write_new")
         steps.append(
             _step(
-                2,
+                len(steps) + 1,
                 description="Save a local report placeholder after research output is produced.",
                 executor="files",
                 action_type="write_file",
@@ -395,7 +475,7 @@ def _should_use_legacy_for_complex_task(lowered: str, route: IntentRoute) -> boo
         return True
     if route.intent == "code" and any(word in lowered for word in ("fix", "patch", "repair")):
         return True
-    if route.intent in {"browser", "research"} and any(word in lowered for word in ("login", "password")):
+    if route.intent in {"browser", "research"} and any(word in lowered for word in ("login", "password", "bank")):
         return True
     dynamic_report = any(word in lowered for word in ("latest", "news", "research", "search")) and any(
         word in lowered for word in ("save", "report", "summary", "summarize")
@@ -438,6 +518,7 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
                 "type_text": "type_text",
                 "write_file": "write_file",
                 "delete_path": "delete_path",
+                "open_path": "open_path",
                 "list_tree": "list_directory_tree",
                 "copy_path": "copy_path",
                 "move_path": "move_path",
@@ -461,7 +542,7 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
             verification_target = str(resolve_user_path(str(parameters["file_path"])))
         elif step.action_type == "open_app":
             verification_target = str(parameters.get("app_name", ""))
-        elif step.action_type in {"delete_path", "list_tree"}:
+        elif step.action_type in {"delete_path", "list_tree", "open_path"}:
             verification_target = str(parameters.get("path", ""))
 
         verification_method = step.verification_method

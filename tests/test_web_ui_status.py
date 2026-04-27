@@ -49,12 +49,20 @@ def test_local_status_payload_contains_phase_one_fields(monkeypatch, mock_worksp
         "workspace_path",
         "python_version",
         "os",
+        "is_windows",
+        "windows_version",
         "llm_provider",
         "llm_model",
         "openai_configured",
         "voice_configured",
         "browser_automation_ready",
         "desktop_control_ready",
+        "pywinauto_available",
+        "pyautogui_available",
+        "playwright_available",
+        "chrome_available",
+        "edge_available",
+        "powershell_available",
         "enabled_tool_modules",
         "disabled_tool_modules",
         "tool_registration_ready",
@@ -77,6 +85,9 @@ def test_local_status_payload_contains_phase_one_fields(monkeypatch, mock_worksp
     assert status["mcp_server_url"] == "http://127.0.0.1:8123/sse"
     assert status["codex_relay"]["project_path"] == str(mock_workspace)
     assert status["diagnostics"]["transport"]["effective_local_mcp_server_url"] == "http://127.0.0.1:8123/sse"
+    if not status["is_windows"]:
+        assert status["desktop_control_ready"] is False
+        assert any("Windows only" in step for step in status["next_steps"])
 
 
 def test_mcp_server_url_prefers_current_request_for_local_browser(monkeypatch):

@@ -9,10 +9,10 @@ from friday.core.risk import RiskLevel
 
 
 KEYWORDS: dict[Intent, tuple[str, ...]] = {
-    Intent.DESKTOP: ("open notepad", "open app", "application", "window", "desktop", "click", "type", "hotkey"),
+    Intent.DESKTOP: ("open notepad", "open app", "application", "window", "click", "type", "hotkey", "screenshot"),
     Intent.BROWSER: ("browser", "chrome", "edge", "website", "url", "login", "tab", "page"),
-    Intent.FILES: ("file", "folder", "directory", "save", "write", "copy", "move", "rename", "delete", "downloads"),
-    Intent.SHELL: ("shell", "terminal", "command", "bash", "powershell"),
+    Intent.FILES: ("file", "folder", "directory", "save", "write", "copy", "move", "rename", "delete", "downloads", "documents", "desktop"),
+    Intent.SHELL: ("shell", "terminal", "command", "bash", "powershell", "command prompt", "cmd"),
     Intent.CODE: ("test", "pytest", "fix error", "repo", "code", "commit", "push", "diff", "branch"),
     Intent.RESEARCH: ("research", "search", "latest", "news", "summarize", "report"),
     Intent.VOICE: ("microphone", "voice", "speak", "transcribe"),
@@ -23,11 +23,47 @@ KEYWORDS: dict[Intent, tuple[str, ...]] = {
 
 
 RISK_KEYWORDS: tuple[tuple[RiskLevel, tuple[str, ...]], ...] = (
-    (RiskLevel.DANGEROUS_RESTRICTED, ("rm -rf /", "wipe", "format drive", "disable security")),
-    (RiskLevel.SENSITIVE_ACTION, ("delete", "overwrite", "push", "commit", "send", "submit", "purchase", "sudo", "admin")),
+    (RiskLevel.DANGEROUS_RESTRICTED, ("rm -rf /", "del /s /q c:\\", "remove-item -recurse -force c:\\", "wipe", "format drive", "disable security", "disable defender", "format c drive")),
+    (RiskLevel.SENSITIVE_ACTION, ("delete", "overwrite", "push", "commit", "send", "submit", "purchase", "sudo", "admin", "login", "password")),
     (RiskLevel.REVERSIBLE_CHANGE, ("move", "rename", "install", "type", "click", "open", "edit")),
     (RiskLevel.SAFE_WRITE, ("create", "save", "draft", "new file", "new folder")),
 )
+
+WINDOWS_FOLDER_NAMES = ("desktop", "downloads", "documents", "pictures", "videos", "music", "home", "workspace")
+DESKTOP_APP_NAMES = (
+    "notepad",
+    "calculator",
+    "file explorer",
+    "explorer",
+    "powershell",
+    "command prompt",
+    "cmd",
+    "terminal",
+    "vscode",
+    "visual studio code",
+)
+WEB_ACTION_MARKERS = ("search", "go to", "visit", "website", "url", "login", "bank", "google.com", "http://", "https://")
+
+
+def _is_folder_open_request(text: str) -> bool:
+    if not any(folder in text for folder in WINDOWS_FOLDER_NAMES):
+        return False
+    if "file explorer" in text or " in explorer" in text or " folder" in text:
+        return True
+    return text.startswith("show ") or text.startswith("open my workspace") or text.startswith("reveal ")
+
+
+def _is_desktop_app_open_request(text: str) -> bool:
+    if not text.startswith("open "):
+        return False
+    if any(marker in text for marker in WEB_ACTION_MARKERS):
+        return False
+    return any(name in text for name in DESKTOP_APP_NAMES)
+
+
+def _is_browser_workflow(text: str) -> bool:
+    has_browser = "chrome" in text or "edge" in text or "browser" in text
+    return has_browser and any(marker in text for marker in WEB_ACTION_MARKERS)
 
 
 def _score_intents(text: str) -> dict[Intent, int]:
@@ -48,12 +84,37 @@ def _likely_risk(text: str) -> RiskLevel:
 
 def route_intent(user_message: str) -> IntentResult:
     text = user_message.strip().lower()
+    if _is_folder_open_request(text):
+        return IntentResult(
+            intent=Intent.FILES,
+            confidence=0.9,
+            required_capabilities=["files"],
+            likely_risk=_likely_risk(text),
+            suggested_executor="files",
+        )
+    if _is_desktop_app_open_request(text):
+        return IntentResult(
+            intent=Intent.DESKTOP,
+            confidence=0.88,
+            required_capabilities=["desktop"],
+            likely_risk=_likely_risk(text),
+            suggested_executor="desktop",
+        )
+    if _is_browser_workflow(text):
+        return IntentResult(
+            intent=Intent.BROWSER,
+            confidence=0.86,
+            required_capabilities=["browser"],
+            likely_risk=_likely_risk(text),
+            suggested_executor="browser",
+        )
+
     scores = _score_intents(text)
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     best_intent, best_score = ranked[0]
     second_score = ranked[1][1] if len(ranked) > 1 else 0
 
-    file_like = any(word in text for word in ("file", "folder", "save", "create", "write"))
+    file_like = any(word in text for word in ("file", "folder", "save", "create", "write", "downloads", "documents", "desktop"))
     web_like = any(word in text for word in ("research", "search", "latest", "news", "website", "browser", "chrome", "edge"))
 
     if file_like and not web_like and scores.get(Intent.FILES, 0) > 0:

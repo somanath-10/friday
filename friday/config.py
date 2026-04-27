@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import platform
+import shutil
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
@@ -66,6 +67,54 @@ def _env_text(name: str, default: str = "") -> str:
 
 def _module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
+
+
+def _command_available(*names: str) -> bool:
+    return any(shutil.which(name) for name in names)
+
+
+def _find_windows_browser(binary_name: str) -> bool:
+    if platform.system() != "Windows":
+        return False
+    if shutil.which(binary_name):
+        return True
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    program_files = os.environ.get("ProgramFiles", "").strip()
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", "").strip()
+    candidates: list[Path] = []
+    if binary_name.lower() == "chrome.exe":
+        if local_app_data:
+            candidates.append(Path(local_app_data) / "Google" / "Chrome" / "Application" / "chrome.exe")
+        if program_files:
+            candidates.append(Path(program_files) / "Google" / "Chrome" / "Application" / "chrome.exe")
+        if program_files_x86:
+            candidates.append(Path(program_files_x86) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    elif binary_name.lower() == "msedge.exe":
+        if program_files:
+            candidates.append(Path(program_files) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+        if program_files_x86:
+            candidates.append(Path(program_files_x86) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+    return any(candidate.exists() for candidate in candidates)
+
+
+def _windows_desktop_status() -> dict[str, Any]:
+    is_windows = platform.system() == "Windows"
+    pywinauto = _module_available("pywinauto") if is_windows else False
+    pyautogui = _module_available("pyautogui") if is_windows else False
+    powershell = _command_available("powershell", "pwsh") if is_windows else False
+    chrome = _find_windows_browser("chrome.exe")
+    edge = _find_windows_browser("msedge.exe")
+    desktop_ready = is_windows and (pywinauto or pyautogui or powershell)
+    return {
+        "is_windows": is_windows,
+        "windows_version": platform.version() if is_windows else "",
+        "pywinauto_available": pywinauto,
+        "pyautogui_available": pyautogui,
+        "powershell_available": powershell,
+        "chrome_available": chrome,
+        "edge_available": edge,
+        "desktop_control_ready": desktop_ready,
+    }
 
 
 def _selected_llm_provider() -> str:
@@ -147,12 +196,20 @@ class ConfigDiagnostics:
     workspace_path: str
     python_version: str
     os: str
+    is_windows: bool
+    windows_version: str
     llm_provider: str
     llm_model: str
     openai_configured: bool
     voice_configured: bool
     browser_automation_ready: bool
     desktop_control_ready: bool
+    pywinauto_available: bool
+    pyautogui_available: bool
+    playwright_available: bool
+    chrome_available: bool
+    edge_available: bool
+    powershell_available: bool
     enabled_tool_modules: list[str]
     disabled_tool_modules: list[dict[str, str]]
     setup_issues: list[str]
@@ -193,6 +250,7 @@ def build_config_diagnostics(
     provider = _selected_llm_provider()
     model = _selected_llm_model(provider)
     openai_configured = bool(_env_text("OPENAI_API_KEY"))
+    windows_status = _windows_desktop_status()
 
     if provider != "openai":
         setup_issues.append(
@@ -216,20 +274,27 @@ def build_config_diagnostics(
     warnings.extend(voice_warnings)
     next_steps.extend(voice_next_steps)
 
-    browser_automation_ready = _module_available("playwright")
-    if not browser_automation_ready:
+    playwright_available = _module_available("playwright")
+    browser_automation_ready = playwright_available and (windows_status["chrome_available"] or windows_status["edge_available"] or not windows_status["is_windows"])
+    if not playwright_available:
         warnings.append("Playwright is not installed; browser automation tools will fall back or fail gracefully.")
         next_steps.append("Run `uv sync` and `uv run playwright install chromium` before browser automation.")
+    elif windows_status["is_windows"] and not (windows_status["chrome_available"] or windows_status["edge_available"]):
+        warnings.append("Playwright is installed, but Chrome/Edge were not detected in common Windows locations.")
 
-    desktop_control_ready = _module_available("pyautogui")
-    if not desktop_control_ready:
-        warnings.append("pyautogui is not installed; desktop control tools are unavailable.")
-        next_steps.append("Run `uv sync` to install desktop automation dependencies.")
-    elif platform.system() == "Darwin":
-        warnings.append(
-            "macOS desktop control may require Screen Recording and Accessibility permissions; "
-            "run `run_permission_diagnostics` if screen/app control fails."
-        )
+    desktop_control_ready = bool(windows_status["desktop_control_ready"])
+    if windows_status["is_windows"]:
+        if not windows_status["pywinauto_available"]:
+            warnings.append("pywinauto is not installed; FRIDAY will use PowerShell and PyAutoGUI fallbacks for desktop control.")
+            next_steps.append("Install pywinauto for stronger Windows UI Automation support.")
+        if not windows_status["pyautogui_available"]:
+            warnings.append("pyautogui is not installed; cursor-based fallback actions are unavailable.")
+            next_steps.append("Install pyautogui for screenshot/cursor fallbacks on Windows.")
+        if not windows_status["powershell_available"]:
+            warnings.append("PowerShell was not detected; some Windows automation and diagnostics will fail.")
+    else:
+        warnings.append("Desktop control is currently implemented for Windows only.")
+        next_steps.append("Desktop control is currently implemented for Windows only.")
 
     from friday.core.permissions import access_mode_summary
     from friday.safety.emergency_stop import emergency_stop_status
@@ -250,12 +315,20 @@ def build_config_diagnostics(
         workspace_path=str(workspace),
         python_version=sys.version.split()[0],
         os=f"{platform.system()} {platform.release()}".strip(),
+        is_windows=bool(windows_status["is_windows"]),
+        windows_version=str(windows_status["windows_version"]),
         llm_provider=provider,
         llm_model=model,
         openai_configured=openai_configured,
         voice_configured=voice_configured,
         browser_automation_ready=browser_automation_ready,
         desktop_control_ready=desktop_control_ready,
+        pywinauto_available=bool(windows_status["pywinauto_available"]),
+        pyautogui_available=bool(windows_status["pyautogui_available"]),
+        playwright_available=playwright_available,
+        chrome_available=bool(windows_status["chrome_available"]),
+        edge_available=bool(windows_status["edge_available"]),
+        powershell_available=bool(windows_status["powershell_available"]),
         enabled_tool_modules=enabled_tool_modules or [],
         disabled_tool_modules=disabled_tool_modules or [],
         setup_issues=setup_issues,
@@ -358,8 +431,10 @@ def build_runtime_status() -> dict[str, Any]:
     if not enabled_tool_modules or not registration.get("ready") or not registration.get("registered_modules"):
         setup_issues.append("No enabled tool modules were successfully registered.")
 
-    browser_automation_ready = _module_available("playwright")
-    desktop_control_ready = _module_available("pyautogui")
+    windows_status = _windows_desktop_status()
+    playwright_available = _module_available("playwright")
+    browser_automation_ready = playwright_available and (windows_status["chrome_available"] or windows_status["edge_available"] or not windows_status["is_windows"])
+    desktop_control_ready = bool(windows_status["desktop_control_ready"])
     voice_configured = all(
         _env_text(key)
         for key in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET")
@@ -370,6 +445,11 @@ def build_runtime_status() -> dict[str, Any]:
     conflicting_override = bool(configured_mcp_server_url) and configured_mcp_server_url != local_mcp_server_url
     if conflicting_override:
         warnings.append("MCP_SERVER_URL does not match the local host/port settings.")
+    if not windows_status["is_windows"]:
+        warnings.append("Desktop control is currently implemented for Windows only.")
+        next_steps.append("Desktop control is currently implemented for Windows only.")
+    elif not windows_status["pywinauto_available"]:
+        warnings.append("pywinauto is not installed; Windows UI Automation will fall back to PowerShell or PyAutoGUI.")
 
     from friday.core.permissions import access_mode_summary
     from friday.safety.emergency_stop import emergency_stop_status
@@ -389,12 +469,20 @@ def build_runtime_status() -> dict[str, Any]:
         "workspace_path": str(workspace),
         "python_version": sys.version.split()[0],
         "os": f"{platform.system()} {platform.release()}".strip(),
+        "is_windows": bool(windows_status["is_windows"]),
+        "windows_version": str(windows_status["windows_version"]),
         "llm_provider": llm_provider,
         "llm_model": llm_model,
         "openai_configured": openai_configured,
         "voice_configured": voice_configured,
         "browser_automation_ready": browser_automation_ready,
         "desktop_control_ready": desktop_control_ready,
+        "pywinauto_available": bool(windows_status["pywinauto_available"]),
+        "pyautogui_available": bool(windows_status["pyautogui_available"]),
+        "playwright_available": playwright_available,
+        "chrome_available": bool(windows_status["chrome_available"]),
+        "edge_available": bool(windows_status["edge_available"]),
+        "powershell_available": bool(windows_status["powershell_available"]),
         "enabled_tool_modules": enabled_tool_modules,
         "disabled_tool_modules": disabled_tool_modules,
         "tool_registration_ready": bool(registration.get("ready")),

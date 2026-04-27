@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,7 +42,19 @@ DEFAULT_PERMISSIONS: dict[str, Any] = {
     "filesystem": {
         "enabled": True,
         "allowed_roots": ["~/Desktop", "~/Documents", "~/Downloads", "~/Workspace", "./workspace"],
-        "protected_paths": ["~/.ssh", "~/.aws", "~/.config", "/etc", "/System"],
+        "protected_paths": [
+            "~/.ssh",
+            "~/.aws",
+            "~/.config",
+            "/etc",
+            "/System",
+            "C:/Windows",
+            "C:/Program Files",
+            "C:/Program Files (x86)",
+            "%USERPROFILE%/.ssh",
+            "%USERPROFILE%/.aws",
+            "%USERPROFILE%/AppData",
+        ],
         "ask_before_delete": True,
         "ask_before_overwrite": True,
         "backup_before_edit": True,
@@ -244,6 +257,19 @@ def _expand_path(raw_path: str) -> Path:
     return path.resolve()
 
 
+def _looks_like_windows_absolute(path_text: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z]:[\\/]", path_text.strip())) or path_text.strip().startswith("\\\\")
+
+
+def _normalize_windows_path_text(path_text: str) -> str:
+    expanded = re.sub(
+        r"%([^%]+)%",
+        lambda match: os.environ.get(match.group(1), match.group(0)),
+        path_text,
+    )
+    return expanded.replace("\\", "/").rstrip("/").lower()
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -255,6 +281,14 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 def _protected_path_reason(path_text: str, config: dict[str, Any]) -> str:
     if not path_text:
         return ""
+    if _looks_like_windows_absolute(path_text):
+        normalized_target = _normalize_windows_path_text(path_text)
+        for raw_root in config.get("filesystem", {}).get("protected_paths", []):
+            if not _looks_like_windows_absolute(str(raw_root)) and "%" not in str(raw_root):
+                continue
+            normalized_root = _normalize_windows_path_text(str(raw_root))
+            if normalized_target == normalized_root or normalized_target.startswith(normalized_root + "/"):
+                return f"Path is protected: {raw_root}"
     try:
         target = resolve_user_path(path_text)
     except Exception:
@@ -272,6 +306,16 @@ def _protected_path_reason(path_text: str, config: dict[str, Any]) -> str:
 def _filesystem_allowed(path_text: str, config: dict[str, Any]) -> bool:
     if not path_text:
         return True
+    if _looks_like_windows_absolute(path_text):
+        normalized_target = _normalize_windows_path_text(path_text)
+        for root in config.get("filesystem", {}).get("allowed_roots", []):
+            raw_root = str(root)
+            if not _looks_like_windows_absolute(raw_root) and "%" not in raw_root:
+                continue
+            normalized_root = _normalize_windows_path_text(raw_root)
+            if normalized_target == normalized_root or normalized_target.startswith(normalized_root + "/"):
+                return True
+        return False
     try:
         target = resolve_user_path(path_text)
     except Exception:

@@ -62,10 +62,15 @@ class BrowserRuntime:
         append_audit_record(command=subject, risk_level=int(decision.risk_level), decision=decision.decision, tool=f"browser.{action}", result=message)
         return BrowserResult(False, action, message, permission_decision=decision.decision)
 
-    def launch(self, *, dry_run: bool = False) -> BrowserResult:
+    def launch(self, browser_name: str = "edge", *, dry_run: bool = False) -> BrowserResult:
         profile = ensure_isolated_profile(self.profile_policy)
-        message = f"{'Dry run: would launch' if dry_run else 'Browser profile ready'} at {profile}"
-        return BrowserResult(True, "launch", message, observation=self.readiness(), dry_run=dry_run)
+        readiness = self.readiness()
+        message = (
+            f"Dry run: would launch {browser_name} with FRIDAY's isolated profile at {profile}"
+            if dry_run
+            else f"Browser profile ready for {browser_name}: {profile}"
+        )
+        return BrowserResult(True, "launch", message, observation=readiness, dry_run=dry_run)
 
     def navigate(self, url: str, *, dry_run: bool = False) -> BrowserResult:
         guarded = self._guard("navigate", url)
@@ -123,6 +128,8 @@ class BrowserRuntime:
     def execute(self, goal: str, plan_step: PlanStep, *, dry_run: bool = True) -> BrowserResult:
         action = plan_step.action_type
         params = plan_step.parameters
+        if action in {"launch", "browser.launch"}:
+            return self.launch(str(params.get("browser", "edge")), dry_run=dry_run)
         if action in {"browser_observe", "observe"}:
             return BrowserResult(True, "observe", f"Dry run: would observe browser for {goal}.", dry_run=True)
         if action in {"navigate", "browser.navigate"}:

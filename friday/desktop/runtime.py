@@ -41,6 +41,9 @@ class DesktopRuntime:
     def get_os(self) -> str:
         return platform.system()
 
+    def is_supported(self) -> bool:
+        return getattr(self.backend, "name", "") != "unsupported"
+
     def get_active_window(self) -> dict[str, Any]:
         return self.backend.get_active_window()
 
@@ -59,6 +62,13 @@ class DesktopRuntime:
         )
 
     def _approval_or_block(self, action: str, subject: str = "") -> DesktopActionResult | None:
+        if not self.is_supported():
+            return DesktopActionResult(
+                False,
+                action,
+                getattr(self.backend, "unsupported_message", "This desktop-control feature is currently implemented for Windows only."),
+                permission_decision="block",
+            )
         decision = self._permission(action, subject)
         if decision.decision == "allow":
             return None
@@ -82,9 +92,15 @@ class DesktopRuntime:
             return guarded
         if dry_run:
             return DesktopActionResult(True, "open_app", f"Dry run: would open {app_name}.", dry_run=True)
-        observation = {"before_windows": self.list_open_windows()}
+        observation = {
+            "before_windows": self.list_open_windows(),
+            "before_active_window": self.get_active_window(),
+        }
         result = self.backend.open_application(app_name)
-        verification = {"app_opened": self.verify_app_opened(app_name)}
+        verification = {
+            "app_opened": self.verify_app_opened(app_name),
+            "after_active_window": self.get_active_window(),
+        }
         ok = bool(result.get("ok")) and bool(verification["app_opened"])
         message = result.get("message", "") or ("Application opened." if ok else "Application open could not be verified.")
         append_audit_record(command=app_name, risk_level=2, decision="allow", tool="desktop.open_app", result=message, verification=verification)
@@ -97,7 +113,8 @@ class DesktopRuntime:
         if dry_run:
             return DesktopActionResult(True, "focus_window", f"Dry run: would focus {app_name}.", dry_run=True)
         result = self.backend.focus_application(app_name)
-        return DesktopActionResult(bool(result.get("ok")), "focus_window", result.get("message", ""))
+        verification = {"after_active_window": self.get_active_window()}
+        return DesktopActionResult(bool(result.get("ok")), "focus_window", result.get("message", ""), verification=verification)
 
     def close_application(self, app_name: str, *, dry_run: bool = False) -> DesktopActionResult:
         guarded = self._approval_or_block("close_app", app_name)
@@ -106,7 +123,8 @@ class DesktopRuntime:
         if dry_run:
             return DesktopActionResult(True, "close_app", f"Dry run: would request {app_name} close.", dry_run=True)
         result = self.backend.close_application(app_name)
-        return DesktopActionResult(bool(result.get("ok")), "close_app", result.get("message", ""))
+        verification = {"app_opened": self.verify_app_opened(app_name)}
+        return DesktopActionResult(bool(result.get("ok")), "close_app", result.get("message", ""), verification=verification)
 
     def type_text(self, text: str, *, dry_run: bool = False) -> DesktopActionResult:
         guarded = self._approval_or_block("type_text", f"{len(text)} characters")
@@ -115,8 +133,13 @@ class DesktopRuntime:
         if dry_run:
             return DesktopActionResult(True, "type_text", f"Dry run: would type {len(text)} characters.", dry_run=True)
         try:
+            observation = {"before_active_window": self.get_active_window()}
             message = keyboard.type_text(text)
-            return DesktopActionResult(True, "type_text", message, verification={"typed": bool(text)})
+            verification = {
+                "typed": self.verify_text_typed(text),
+                "after_active_window": self.get_active_window(),
+            }
+            return DesktopActionResult(True, "type_text", message, observation=observation, verification=verification)
         except Exception as exc:
             return DesktopActionResult(False, "type_text", str(exc))
 
@@ -127,8 +150,9 @@ class DesktopRuntime:
         if dry_run:
             return DesktopActionResult(True, "hotkey", f"Dry run: would press {'+'.join(keys)}.", dry_run=True)
         try:
+            observation = {"before_active_window": self.get_active_window()}
             message = keyboard.send_hotkey(*keys)
-            return DesktopActionResult(True, "hotkey", message)
+            return DesktopActionResult(True, "hotkey", message, observation=observation, verification={"after_active_window": self.get_active_window()})
         except Exception as exc:
             return DesktopActionResult(False, "hotkey", str(exc))
 
@@ -139,8 +163,13 @@ class DesktopRuntime:
         if dry_run:
             return DesktopActionResult(True, "click", f"Dry run: would click ({x}, {y}).", dry_run=True)
         try:
+            screenshot = screen.take_screenshot("before_click.png")
+            observation = {
+                "before_active_window": self.get_active_window(),
+                "before_screenshot": screenshot.path if screenshot.ok else screenshot.error,
+            }
             message = mouse.click(x, y)
-            return DesktopActionResult(True, "click", message)
+            return DesktopActionResult(True, "click", message, observation=observation, verification={"after_active_window": self.get_active_window()})
         except Exception as exc:
             return DesktopActionResult(False, "click", str(exc))
 
@@ -162,11 +191,15 @@ class DesktopRuntime:
 
     def take_screenshot(self, filename: str = "") -> DesktopActionResult:
         result = screen.take_screenshot(filename)
-        return DesktopActionResult(result.ok, "screenshot", result.path or result.error, observation=result.__dict__)
+        message = result.path or result.error
+        append_audit_record(command=filename or "desktop_screenshot", risk_level=0, decision="allow" if result.ok else "block", tool="desktop.screenshot", result=message)
+        return DesktopActionResult(result.ok, "screenshot", message, observation=result.__dict__)
 
     def inspect_screen(self, question: str = "") -> DesktopActionResult:
         observation = screen.inspect_screen(question)
-        return DesktopActionResult(bool(observation.get("ok")), "inspect_screen", str(observation.get("summary") or observation.get("error") or ""), observation=observation)
+        message = str(observation.get("summary") or observation.get("error") or "")
+        append_audit_record(command=question, risk_level=0, decision="allow" if observation.get("ok") else "block", tool="desktop.inspect_screen", result=message)
+        return DesktopActionResult(bool(observation.get("ok")), "inspect_screen", message, observation=observation)
 
     def locate_ui_target(self, target: str) -> DesktopActionResult:
         observation = screen.inspect_screen(target)
@@ -200,14 +233,20 @@ class DesktopRuntime:
         params = plan_step.parameters
         if action == "open_app":
             return self.open_application(str(params.get("app_name", "")), dry_run=dry_run)
+        if action in {"focus_window", "focus_app"}:
+            return self.focus_application(str(params.get("app_name", "")), dry_run=dry_run)
+        if action in {"close_app", "close_window"}:
+            return self.close_application(str(params.get("app_name", "")), dry_run=dry_run)
         if action == "type_text":
             return self.type_text(str(params.get("text", "")), dry_run=dry_run)
         if action == "hotkey":
             return self.send_hotkeys(list(params.get("keys", [])), dry_run=dry_run)
         if action == "click":
             return self.click_coordinates(int(params.get("x", 0)), int(params.get("y", 0)), dry_run=dry_run)
+        if action in {"screenshot", "take_screenshot"}:
+            return self.take_screenshot(str(params.get("filename", "")))
         if action == "inspect_screen":
-            return self.inspect_screen(goal)
+            return self.inspect_screen(str(params.get("question", goal)))
         return DesktopActionResult(False, action, f"No desktop runtime handler for action: {action}")
 
 

@@ -11,6 +11,8 @@ from friday.tools import git_tool, shell as shell_tools
 def test_risk_classifies_readonly_and_dangerous_shell():
     assert classify_shell_command("git status").level == RiskLevel.READ_ONLY
     assert classify_shell_command("rm -rf /").level == RiskLevel.DANGEROUS_RESTRICTED
+    assert classify_shell_command("del /s /q C:\\").level == RiskLevel.DANGEROUS_RESTRICTED
+    assert classify_shell_command("Remove-Item -Recurse -Force C:\\").level == RiskLevel.DANGEROUS_RESTRICTED
     assert classify_shell_command("pip install requests").level == RiskLevel.SENSITIVE_ACTION
     assert classify_shell_command("python fix_script.py").level == RiskLevel.REVERSIBLE_CHANGE
 
@@ -57,6 +59,14 @@ def test_dangerous_command_blocked():
 
     assert decision.decision == "block"
     assert decision.risk_level == RiskLevel.DANGEROUS_RESTRICTED
+
+
+def test_windows_dangerous_commands_blocked():
+    del_decision = check_shell_permission("del /s /q C:\\")
+    remove_decision = check_shell_permission("Remove-Item -Recurse -Force C:\\")
+
+    assert del_decision.decision == "block"
+    assert remove_decision.decision == "block"
 
 
 def test_sensitive_command_requires_approval():

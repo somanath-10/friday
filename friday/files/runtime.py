@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import platform
 import shutil
+import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -149,6 +151,26 @@ class FileRuntime:
             lines.append(str(item.relative_to(safe.path)))
         return FileResult(True, "list", "\n".join(lines), path=str(safe.path), metadata={"count": len(lines)})
 
+    def open_path(self, path: str, *, dry_run: bool = False) -> FileResult:
+        safe = resolve_safe_path(path, tool_name="open_path", operation="read")
+        blocked = self._blocked_or_approval("open_path", safe)
+        if blocked:
+            return blocked
+        if not safe.path.exists():
+            return FileResult(False, "open_path", f"Path not found: {safe.path}", path=str(safe.path))
+        if platform.system() != "Windows":
+            return FileResult(False, "open_path", "This desktop-control feature is currently implemented for Windows only.", path=str(safe.path), permission_decision="block")
+        if dry_run:
+            return FileResult(True, "open_path", f"Dry run: would open {safe.path} in File Explorer.", path=str(safe.path), dry_run=True)
+        try:
+            result = subprocess.run(["explorer.exe", str(safe.path)], capture_output=True, text=True, timeout=10)
+        except Exception as exc:
+            return FileResult(False, "open_path", f"Could not open {safe.path}: {exc}", path=str(safe.path))
+        if result.returncode != 0:
+            return FileResult(False, "open_path", result.stderr.strip() or result.stdout.strip() or f"Could not open {safe.path}", path=str(safe.path))
+        append_audit_record(command=str(safe.path), risk_level=0, decision="allow", tool="files.open_path", result="opened")
+        return FileResult(True, "open_path", f"Opened {safe.path} in File Explorer.", path=str(safe.path))
+
     def preview_bulk(self, paths: list[str], *, operation: str) -> FileResult:
         preview = preview_bulk_operation(paths, operation=operation)
         return FileResult(not preview["blocked"], "preview_bulk", "Bulk operation preview generated.", metadata=preview)
@@ -162,6 +184,8 @@ class FileRuntime:
             return self.append_file(str(params.get("path") or params.get("file_path") or "generated.txt"), str(params.get("content", "")), dry_run=dry_run)
         if action in {"list_tree", "files.list", "preview_delete"}:
             return self.list_tree(str(params.get("path") or params.get("directory") or "."), limit=int(params.get("limit", 200)))
+        if action in {"open_path", "files.open"}:
+            return self.open_path(str(params.get("path") or params.get("file_path") or ""), dry_run=dry_run)
         if action in {"delete_path", "files.delete"}:
             return self.delete_path(str(params.get("path") or params.get("file_path") or ""), dry_run=dry_run)
         if action in {"copy_path", "files.copy"}:

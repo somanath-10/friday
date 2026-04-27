@@ -239,7 +239,27 @@ def run_command_pipeline(user_message: str, *, dry_run: bool = True) -> Pipeline
     events.emit(EventType.INTENT_DETECTED, f"Intent detected: {intent.intent.value}", intent=intent.to_dict())
     plan = create_plan(user_message, intent)
     events.emit(EventType.PLAN_CREATED, "Plan created.", plan=plan.to_dict())
-    return execute_plan(plan, dry_run=dry_run, event_log=events)
+    result = execute_plan(plan, dry_run=dry_run, event_log=events)
+    try:
+        from friday.memory.action_trace import save_action_trace
+        from friday.memory.workflow_memory import remember_workflow_pattern
+
+        save_action_trace(
+            user_message,
+            plan.to_dict(),
+            result.to_dict(),
+        )
+        if result.status == "completed":
+            remember_workflow_pattern(
+                user_message,
+                {
+                    "intent": intent.intent.value,
+                    "steps": [step.to_dict() for step in plan.steps],
+                },
+            )
+    except Exception:
+        pass
+    return result
 
 
 class StructuredExecutor:

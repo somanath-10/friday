@@ -5,11 +5,17 @@ Path helpers shared across FRIDAY modules.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 
 def _expand(raw_path: str) -> Path:
-    return Path(os.path.expandvars(os.path.expanduser(raw_path)))
+    expanded_percent = re.sub(
+        r"%([^%]+)%",
+        lambda match: os.environ.get(match.group(1), match.group(0)),
+        raw_path,
+    )
+    return Path(os.path.expandvars(os.path.expanduser(expanded_percent)))
 
 
 def _first_existing_path(candidates: list[Path]) -> Path:
@@ -94,12 +100,42 @@ def downloads_dir() -> Path:
     return _first_existing_path(candidates)
 
 
+def pictures_dir() -> Path:
+    userprofile = os.environ.get("USERPROFILE", "").strip()
+    candidates: list[Path] = []
+    if userprofile:
+        candidates.append(Path(userprofile) / "Pictures")
+    candidates.append(Path.home() / "Pictures")
+    return _first_existing_path(candidates)
+
+
+def videos_dir() -> Path:
+    userprofile = os.environ.get("USERPROFILE", "").strip()
+    candidates: list[Path] = []
+    if userprofile:
+        candidates.append(Path(userprofile) / "Videos")
+    candidates.append(Path.home() / "Videos")
+    return _first_existing_path(candidates)
+
+
+def music_dir() -> Path:
+    userprofile = os.environ.get("USERPROFILE", "").strip()
+    candidates: list[Path] = []
+    if userprofile:
+        candidates.append(Path(userprofile) / "Music")
+    candidates.append(Path.home() / "Music")
+    return _first_existing_path(candidates)
+
+
 def known_user_paths() -> dict[str, Path]:
     return {
         "home": home_dir(),
         "desktop": desktop_dir(),
         "documents": documents_dir(),
         "downloads": downloads_dir(),
+        "pictures": pictures_dir(),
+        "videos": videos_dir(),
+        "music": music_dir(),
         "workspace": workspace_dir(),
     }
 

@@ -53,7 +53,8 @@ def test_desktop_runtime_mock_app_open_and_verify(monkeypatch, tmp_path):
 
     assert result.ok is True
     assert runtime.verify_app_opened("Notepad") is True
-    assert result.verification == {"app_opened": True}
+    assert result.verification["app_opened"] is True
+    assert result.verification["after_active_window"]["app"] == "Notepad"
 
 
 def test_desktop_runtime_mock_window_active():
@@ -67,16 +68,38 @@ def test_desktop_runtime_mock_window_active():
 
 def test_screenshot_safe_failure(monkeypatch, tmp_path):
     monkeypatch.setenv("FRIDAY_WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setattr("friday.desktop.screen.platform.system", lambda: "Windows")
 
     def fail_pyautogui():
         raise RuntimeError("no display")
 
+    class _BrokenImageGrab:
+        @staticmethod
+        def grab():
+            raise RuntimeError("no display")
+
     monkeypatch.setattr("friday.desktop.screen._load_pyautogui", fail_pyautogui)
+    monkeypatch.setattr(
+        "friday.desktop.screen._module_available",
+        lambda name: False if name == "PIL.ImageGrab" else False,
+    )
 
     result = take_screenshot("safe_failure.png")
 
     assert result.ok is False
     assert "no display" in result.error
+
+
+def test_non_windows_desktop_runtime_fails_gracefully(monkeypatch):
+    monkeypatch.setattr("friday.desktop.runtime.platform.system", lambda: "Darwin")
+    from friday.desktop.apps import UnsupportedDesktopBackend
+
+    runtime = DesktopRuntime(backend=UnsupportedDesktopBackend("Darwin"))
+
+    result = runtime.open_application("Notepad", dry_run=False)
+
+    assert result.ok is False
+    assert "Windows only" in result.message
 
 
 def test_desktop_permission_check_for_close_requires_approval(monkeypatch, tmp_path):

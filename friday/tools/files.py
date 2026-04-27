@@ -35,6 +35,11 @@ def _open_path_default(path: str) -> str:
         return f"Path does not exist: {path}"
 
     if os.name == "nt":
+        if os.path.isdir(path):
+            result = subprocess.run(["explorer.exe", path], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                return f"Opened folder view: {path}"
+            return f"Could not open path: {result.stderr.strip() or result.stdout.strip()}"
         os.startfile(path)
         return f"Opened path: {path}"
     if sys.platform == "darwin":
