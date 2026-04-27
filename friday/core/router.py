@@ -10,7 +10,7 @@ from friday.core.risk import RiskLevel
 
 KEYWORDS: dict[Intent, tuple[str, ...]] = {
     Intent.DESKTOP: ("open notepad", "open app", "application", "window", "click", "type", "hotkey", "screenshot"),
-    Intent.BROWSER: ("browser", "chrome", "edge", "website", "url", "login", "tab", "page"),
+    Intent.BROWSER: ("browser", "chrome", "edge", "website", "url", "login", "tab", "page", "youtube", "google", "wikipedia", "github", "gmail", "amazon", "email"),
     Intent.FILES: ("file", "folder", "directory", "save", "write", "copy", "move", "rename", "delete", "downloads", "documents", "desktop"),
     Intent.SHELL: ("shell", "terminal", "command", "bash", "powershell", "command prompt", "cmd"),
     Intent.CODE: ("test", "pytest", "fix error", "repo", "code", "commit", "push", "diff", "branch"),
@@ -41,8 +41,10 @@ DESKTOP_APP_NAMES = (
     "terminal",
     "vscode",
     "visual studio code",
+    "chrome",
+    "edge",
 )
-WEB_ACTION_MARKERS = ("search", "go to", "visit", "website", "url", "login", "bank", "google.com", "http://", "https://")
+WEB_ACTION_MARKERS = ("search", "go to", "visit", "website", "url", "login", "bank", "google.com", "youtube", "wikipedia", "github", "gmail", "amazon", "email", "http://", "https://")
 
 
 def _is_folder_open_request(text: str) -> bool:
@@ -54,7 +56,7 @@ def _is_folder_open_request(text: str) -> bool:
 
 
 def _is_desktop_app_open_request(text: str) -> bool:
-    if not text.startswith("open "):
+    if not text.startswith(("open ", "focus ", "close ")):
         return False
     if any(marker in text for marker in WEB_ACTION_MARKERS):
         return False
@@ -63,7 +65,8 @@ def _is_desktop_app_open_request(text: str) -> bool:
 
 def _is_browser_workflow(text: str) -> bool:
     has_browser = "chrome" in text or "edge" in text or "browser" in text
-    return has_browser and any(marker in text for marker in WEB_ACTION_MARKERS)
+    has_site = any(site in text for site in ("youtube", "google", "wikipedia", "github", "gmail", "amazon"))
+    return (has_browser or has_site) and any(marker in text for marker in WEB_ACTION_MARKERS)
 
 
 def _score_intents(text: str) -> dict[Intent, int]:
@@ -115,7 +118,7 @@ def route_intent(user_message: str) -> IntentResult:
     second_score = ranked[1][1] if len(ranked) > 1 else 0
 
     file_like = any(word in text for word in ("file", "folder", "save", "create", "write", "downloads", "documents", "desktop"))
-    web_like = any(word in text for word in ("research", "search", "latest", "news", "website", "browser", "chrome", "edge"))
+    web_like = any(word in text for word in ("research", "search", "latest", "news", "website", "browser", "chrome", "edge", "youtube", "google", "wikipedia", "github", "gmail", "amazon"))
 
     if file_like and not web_like and scores.get(Intent.FILES, 0) > 0:
         best_intent = Intent.FILES

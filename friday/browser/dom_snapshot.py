@@ -41,6 +41,7 @@ class DomSnapshot:
 
 class _SnapshotParser(HTMLParser):
     interactive_tags = {"a", "button", "input", "textarea", "select"}
+    void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 
     def __init__(self, base_url: str = "") -> None:
         super().__init__(convert_charrefs=True)
@@ -73,26 +74,14 @@ class _SnapshotParser(HTMLParser):
                     ],
                 }
             )
+            if tag in self.void_tags:
+                self._finalize_interactive(tag)
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "title":
             self._in_title = False
         if self._interactive_stack and self._interactive_stack[-1]["tag"] == tag:
-            item = self._interactive_stack.pop()
-            label = _collapse(" ".join(str(part) for part in item.pop("label_parts", []) if part))
-            if label or item.get("href") or item.get("name"):
-                self.elements.append(
-                    DomElement(
-                        index=len(self.elements) + 1,
-                        tag=item["tag"],
-                        label=label or item.get("href") or item.get("name") or "(unlabeled)",
-                        href=item.get("href", ""),
-                        role=item.get("role", ""),
-                        input_type=item.get("input_type", ""),
-                        name=item.get("name", ""),
-                        disabled=bool(item.get("disabled")),
-                    )
-                )
+            self._finalize_interactive(tag)
 
     def handle_data(self, data: str) -> None:
         cleaned = _collapse(data)
@@ -103,6 +92,25 @@ class _SnapshotParser(HTMLParser):
         self.text_parts.append(cleaned)
         for item in self._interactive_stack:
             item["label_parts"].append(cleaned)
+
+    def _finalize_interactive(self, tag: str) -> None:
+        if not self._interactive_stack or self._interactive_stack[-1]["tag"] != tag:
+            return
+        item = self._interactive_stack.pop()
+        label = _collapse(" ".join(str(part) for part in item.pop("label_parts", []) if part))
+        if label or item.get("href") or item.get("name"):
+            self.elements.append(
+                DomElement(
+                    index=len(self.elements) + 1,
+                    tag=item["tag"],
+                    label=label or item.get("href") or item.get("name") or "(unlabeled)",
+                    href=item.get("href", ""),
+                    role=item.get("role", ""),
+                    input_type=item.get("input_type", ""),
+                    name=item.get("name", ""),
+                    disabled=bool(item.get("disabled")),
+                )
+            )
 
 
 def _collapse(text: str) -> str:

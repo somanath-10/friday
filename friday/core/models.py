@@ -66,6 +66,7 @@ class PlanStep:
     verification_method: str
     tool_name: str = ""
     verification_target: str = ""
+    fallback_strategy: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

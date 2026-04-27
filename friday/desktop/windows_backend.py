@@ -326,6 +326,81 @@ Get-Process |
             if isinstance(row, dict)
         ]
 
+    def inspect_window_controls(self, app_name: str = "", limit: int = 80) -> list[dict[str, Any]]:
+        if not _is_windows():
+            return []
+        try:
+            from pywinauto import Desktop  # type: ignore
+
+            desktop = Desktop(backend="uia")
+            target = None
+            if app_name.strip():
+                needle = app_name.strip().lower()
+                for window in desktop.windows():
+                    try:
+                        title = window.window_text()
+                    except Exception:
+                        title = ""
+                    if needle in title.lower():
+                        target = window
+                        break
+            if target is None:
+                target = desktop.get_active()
+
+            controls: list[dict[str, Any]] = []
+            for index, control in enumerate(target.descendants(), start=1):
+                if index > max(1, limit):
+                    break
+                try:
+                    rectangle = control.rectangle()
+                    rect = {
+                        "left": int(rectangle.left),
+                        "top": int(rectangle.top),
+                        "right": int(rectangle.right),
+                        "bottom": int(rectangle.bottom),
+                    }
+                except Exception:
+                    rect = {}
+                try:
+                    role = control.element_info.control_type or ""
+                except Exception:
+                    role = ""
+                try:
+                    name = control.window_text()
+                except Exception:
+                    name = ""
+                try:
+                    automation_id = control.element_info.automation_id or ""
+                except Exception:
+                    automation_id = ""
+                try:
+                    class_name = control.element_info.class_name or ""
+                except Exception:
+                    class_name = ""
+                try:
+                    enabled = bool(control.is_enabled())
+                except Exception:
+                    enabled = True
+                try:
+                    focused = bool(control.has_keyboard_focus())
+                except Exception:
+                    focused = False
+                controls.append(
+                    {
+                        "control_id": automation_id or f"uia:{index}",
+                        "role": role,
+                        "name": name,
+                        "automation_id": automation_id,
+                        "class_name": class_name,
+                        "bounding_rectangle": rect,
+                        "enabled": enabled,
+                        "focused": focused,
+                    }
+                )
+            return controls
+        except Exception:
+            return []
+
     def get_active_window(self) -> dict[str, Any]:
         if not _is_windows():
             return {"ok": False, "title": "", "app": "", "message": self.unsupported_message}

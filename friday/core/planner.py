@@ -59,6 +59,7 @@ def _step(
     risk_level: RiskLevel,
     needs_approval: bool,
     verification_method: str,
+    fallback_strategy: str = "",
 ) -> PlanStep:
     return PlanStep(
         id=f"step_{index}",
@@ -70,6 +71,7 @@ def _step(
         risk_level=risk_level,
         needs_approval=needs_approval,
         verification_method=verification_method,
+        fallback_strategy=fallback_strategy,
     )
 
 
@@ -312,6 +314,43 @@ def _desktop_plan(message: str) -> list[PlanStep]:
                 risk_level=assessment.level,
                 needs_approval=False,
                 verification_method="output_nonempty",
+                fallback_strategy="Use screenshot/OCR fallback if direct screen inspection is unavailable.",
+            )
+        ]
+
+    if lowered.startswith("focus "):
+        assessment = classify_desktop_action("focus_window")
+        app_name = _extract_app_name(message.replace("focus", "open", 1))
+        return [
+            _step(
+                1,
+                description=f"Focus {app_name} by app/window name.",
+                executor="desktop",
+                action_type="focus_window",
+                parameters={"app_name": app_name},
+                expected_result="Requested window is active.",
+                risk_level=assessment.level,
+                needs_approval=False,
+                verification_method="window_active",
+                fallback_strategy="List windows and ask the user if no matching window is found.",
+            )
+        ]
+
+    if lowered.startswith("close "):
+        assessment = classify_desktop_action("close_app")
+        app_name = _extract_app_name(message.replace("close", "open", 1))
+        return [
+            _step(
+                1,
+                description=f"Request permission before closing {app_name}.",
+                executor="desktop",
+                action_type="close_app",
+                parameters={"app_name": app_name},
+                expected_result="Requested window is closed after approval if needed.",
+                risk_level=assessment.level,
+                needs_approval=assessment.level >= RiskLevel.SENSITIVE_ACTION,
+                verification_method="window_absent",
+                fallback_strategy="Ask the user to take over if unsaved changes or a modal blocks close.",
             )
         ]
 
@@ -328,21 +367,23 @@ def _desktop_plan(message: str) -> list[PlanStep]:
             risk_level=assessment.level,
             needs_approval=False,
             verification_method="window_active",
+            fallback_strategy="Resolve Windows app alias, then use PowerShell launch fallback.",
         )
     ]
-    if "type" in message.lower():
+    if "type" in message.lower() or "press" in message.lower():
         type_assessment = classify_desktop_action("type_text")
         steps.append(
             _step(
                 2,
-                description="Type the requested text into the active application.",
+                description="Observe the active window and perform the requested desktop action using UI Automation targets.",
                 executor="desktop",
-                action_type="type_text",
-                parameters={"text": _extract_type_text(message)},
-                expected_result="Text appears in the active application.",
+                action_type="dynamic_desktop_task",
+                parameters={"goal": message, "text": _extract_type_text(message)},
+                expected_result="Requested desktop interaction is completed through observed controls.",
                 risk_level=type_assessment.level,
                 needs_approval=False,
-                verification_method="screen_contains",
+                verification_method="dynamic_goal_progress",
+                fallback_strategy="Use hotkeys, screenshot/OCR, or user takeover if UI Automation cannot identify the control.",
             )
         )
     return steps
@@ -371,47 +412,20 @@ def _browser_or_research_plan(message: str, intent: IntentResult) -> list[PlanSt
         )
     if mentions_browser_app and not any(marker in lowered for marker in browser_task_markers):
         return steps
-    if any(word in lowered for word in ("login", "password", "submit", "send", "purchase", "payment")):
-        read_assessment = classify_browser_action("navigate")
-        sensitive = classify_browser_action("submit")
-        return [
-            *steps,
-            _step(
-                len(steps) + 1,
-                description="Open or observe the requested browser destination before any sensitive action.",
-                executor="browser",
-                action_type="browser_observe",
-                parameters={"query": message},
-                expected_result="Current page state is visible before credentials or submission.",
-                risk_level=read_assessment.level,
-                needs_approval=False,
-                verification_method="text_contains",
-            ),
-            _step(
-                len(steps) + 2,
-                description="Stop and request approval before entering credentials or submitting a form.",
-                executor="browser",
-                action_type="browser_submit_form",
-                parameters={"reason": "login_or_sensitive_form", "query": message},
-                expected_result="No sensitive form is submitted without approval.",
-                risk_level=sensitive.level,
-                needs_approval=True,
-                verification_method="permission_required",
-            ),
-        ]
-
-    assessment = classify_browser_action("read")
+    sensitive_goal = any(word in lowered for word in ("login", "password", "submit", "send", "purchase", "payment", "checkout", "bank"))
+    assessment = classify_browser_action("submit" if sensitive_goal else "read")
     steps.append(
         _step(
             len(steps) + 1,
-            description="Observe or search the requested web content before taking actions.",
-            executor=executor,
-            action_type="browser_observe",
-            parameters={"query": message},
-            expected_result="Relevant page or source text is available for summarization.",
+            description="Run a generic browser observe-act-verify loop using DOM/accessibility targets.",
+            executor=executor if executor == "research" else "browser",
+            action_type="dynamic_browser_task",
+            parameters={"goal": message, "browser": _extract_browser_name(message)},
+            expected_result="The browser task progresses through observed page elements, not hardcoded site selectors.",
             risk_level=assessment.level,
-            needs_approval=False,
-            verification_method="text_contains",
+            needs_approval=sensitive_goal,
+            verification_method="dynamic_goal_progress",
+            fallback_strategy="Use accessibility snapshot, then screenshot fallback; ask user on login, captcha, payment, or permission prompts.",
         )
     )
     if any(word in lowered for word in ("save", "report", "summary")):
@@ -475,8 +489,6 @@ def _should_use_legacy_for_complex_task(lowered: str, route: IntentRoute) -> boo
         return True
     if route.intent == "code" and any(word in lowered for word in ("fix", "patch", "repair")):
         return True
-    if route.intent in {"browser", "research"} and any(word in lowered for word in ("login", "password", "bank")):
-        return True
     dynamic_report = any(word in lowered for word in ("latest", "news", "research", "search")) and any(
         word in lowered for word in ("save", "report", "summary", "summarize")
     )
@@ -523,6 +535,8 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
                 "copy_path": "copy_path",
                 "move_path": "move_path",
                 "shell_command": "run_shell_command",
+                "dynamic_desktop_task": "desktop_dynamic_loop",
+                "dynamic_browser_task": "browser_dynamic_loop",
                 "browser_observe": "search_web",
                 "browser_submit_form": "browser_submit_form",
                 "status": "get_host_control_status",
@@ -544,6 +558,8 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
             verification_target = str(parameters.get("app_name", ""))
         elif step.action_type in {"delete_path", "list_tree", "open_path"}:
             verification_target = str(parameters.get("path", ""))
+        elif step.action_type in {"dynamic_browser_task", "dynamic_desktop_task"}:
+            verification_target = str(parameters.get("goal", user_message))
 
         verification_method = step.verification_method
         if step.action_type == "shell_command":
@@ -562,6 +578,7 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
                 needs_approval=step.needs_approval,
                 verification_method=verification_method,
                 verification_target=verification_target,
+                fallback_strategy=step.fallback_strategy,
             )
         )
 

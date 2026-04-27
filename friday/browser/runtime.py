@@ -8,6 +8,7 @@ from typing import Any
 from friday.browser.dom_snapshot import DomSnapshot, format_indexed_elements, parse_html_snapshot
 from friday.browser.downloads import check_download_permission, download_target_path
 from friday.browser.forms import check_form_submit_permission
+from friday.browser.operator import BrowserOperator, build_element_map_from_html, infer_site_url
 from friday.browser.profile_manager import BrowserProfilePolicy, ensure_isolated_profile, load_profile_policy
 from friday.browser.playwright_controller import playwright_readiness
 from friday.core.models import PlanStep
@@ -125,6 +126,35 @@ class BrowserRuntime:
         ok = decision.decision == "allow"
         return BrowserResult(ok, "download", f"Download target: {target}" if ok else decision.reason, permission_decision=decision.decision)
 
+    def dynamic_task(self, goal: str, *, html: str = "", dry_run: bool = False) -> BrowserResult:
+        operator = BrowserOperator()
+        if html:
+            observation = build_element_map_from_html(html, url=self.current_url)
+        elif self.snapshot:
+            from friday.browser.operator import build_element_map_from_dom
+
+            observation = build_element_map_from_dom(self.snapshot)
+        else:
+            observation = build_element_map_from_html("<title>Blank</title>", url=infer_site_url(goal))
+        loop = operator.run_dry_loop(goal, observation, max_steps=4)
+        append_audit_record(
+            command=goal,
+            risk_level=0,
+            decision="allow" if loop.status != "approval_required" else "ask",
+            tool="browser.dynamic_operator",
+            result=loop.message,
+            verification={"status": loop.status},
+        )
+        return BrowserResult(
+            loop.completed or dry_run,
+            "dynamic_browser_task",
+            loop.message,
+            observation=observation.to_dict(),
+            verification=loop.to_dict(),
+            permission_decision="ask" if loop.status == "approval_required" else "allow",
+            dry_run=dry_run,
+        )
+
     def execute(self, goal: str, plan_step: PlanStep, *, dry_run: bool = True) -> BrowserResult:
         action = plan_step.action_type
         params = plan_step.parameters
@@ -140,4 +170,6 @@ class BrowserRuntime:
             return self.type_into_field(int(params.get("index", 1)), str(params.get("text", "")), dry_run=dry_run)
         if action in {"submit", "browser.submit"}:
             return self.submit_form(str(params.get("label", "")), fields=list(params.get("fields", [])), dry_run=dry_run)
+        if action in {"dynamic_browser_task", "browser_dynamic_loop"}:
+            return self.dynamic_task(str(params.get("goal", goal)), html=str(params.get("html", "")), dry_run=dry_run)
         return BrowserResult(False, action, f"No browser runtime handler for action: {action}")

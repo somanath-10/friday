@@ -1424,6 +1424,25 @@ Start-Sleep -Milliseconds 60;
             return f"Error pressing key: {str(e)}"
 
     @mcp.tool()
+    def desktop_dynamic_loop(goal: str, max_steps: int = 4) -> str:
+        """
+        Run the generic Windows desktop observe-act-verify helper. It prefers
+        UI Automation control maps and only falls back to screenshots when the
+        active window cannot be inspected.
+        """
+        try:
+            from friday.desktop.runtime import DesktopRuntime
+
+            result = DesktopRuntime().run_dynamic_task(goal, dry_run=False)
+            if result.ok:
+                return result.message
+            if result.permission_decision == "block":
+                return result.message
+            return result.message or "Dynamic desktop loop could not complete."
+        except Exception as e:
+            return f"Error in dynamic desktop loop: {e}"
+
+    @mcp.tool()
     async def voice_filler(filler_type: str = "thinking") -> str:
         """
         Trigger a preemptive, short audio filler ('Thinking...', 'Looking that up...', etc.)

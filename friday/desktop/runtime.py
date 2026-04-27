@@ -53,6 +53,11 @@ class DesktopRuntime:
     def list_installed_apps(self) -> list[dict[str, Any]]:
         return self.backend.list_installed_apps()
 
+    def inspect_window_controls(self, app_name: str = "", limit: int = 80) -> list[dict[str, Any]]:
+        if not hasattr(self.backend, "inspect_window_controls"):
+            return []
+        return self.backend.inspect_window_controls(app_name, limit)
+
     def _permission(self, action: str, subject: str = ""):
         assessment = classify_desktop_action(action)
         return permission_for_assessment(
@@ -210,6 +215,62 @@ class DesktopRuntime:
             observation=observation,
         )
 
+    def run_dynamic_task(self, goal: str, *, dry_run: bool = False) -> DesktopActionResult:
+        from friday.desktop.operator import DesktopOperator
+
+        guarded = self._approval_or_block("inspect_screen", goal)
+        if guarded:
+            return guarded
+        active = self.get_active_window()
+        controls = self.inspect_window_controls(str(active.get("app") or active.get("title") or ""), limit=120)
+        operator = DesktopOperator()
+        observation = operator.observe_controls(
+            controls,
+            active_app=str(active.get("app", "")),
+            active_window=str(active.get("title", "")),
+        )
+        action = operator.decide_next_action(goal, observation)
+        decision = operator.permission_for_action(action)
+        if decision.get("decision") != "allow":
+            return DesktopActionResult(
+                False,
+                "dynamic_desktop_task",
+                decision.get("reason", "Desktop action requires approval."),
+                observation=observation.to_dict(),
+                verification={"decision": decision},
+                permission_decision=str(decision.get("decision", "ask")),
+            )
+        if dry_run:
+            message = f"Dry run: dynamic desktop operator selected {action.get('type')} for {action.get('element_id') or 'fallback'}."
+            return DesktopActionResult(
+                True,
+                "dynamic_desktop_task",
+                message,
+                observation=observation.to_dict(),
+                verification={"action": action},
+                dry_run=True,
+            )
+        if action.get("type") == "type_text":
+            result = self.type_text(str(action.get("text", "")), dry_run=False)
+        elif action.get("type") == "screenshot_fallback":
+            result = self.inspect_screen(goal)
+        else:
+            result = DesktopActionResult(
+                False,
+                "dynamic_desktop_task",
+                "Live UIA control clicking is not wired yet; screenshot fallback is available.",
+                observation=observation.to_dict(),
+            )
+        append_audit_record(
+            command=goal,
+            risk_level=1,
+            decision=result.permission_decision,
+            tool="desktop.dynamic_operator",
+            result=result.message,
+            verification=result.verification,
+        )
+        return result
+
     def verify_app_opened(self, app_name: str) -> bool:
         needle = app_name.lower()
         for row in self.list_open_windows():
@@ -247,6 +308,8 @@ class DesktopRuntime:
             return self.take_screenshot(str(params.get("filename", "")))
         if action == "inspect_screen":
             return self.inspect_screen(str(params.get("question", goal)))
+        if action in {"dynamic_desktop_task", "desktop_dynamic_loop"}:
+            return self.run_dynamic_task(str(params.get("goal", goal)), dry_run=dry_run)
         return DesktopActionResult(False, action, f"No desktop runtime handler for action: {action}")
 
 

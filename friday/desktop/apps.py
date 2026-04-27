@@ -32,6 +32,9 @@ class UnsupportedDesktopBackend:
     def list_open_windows(self) -> list[dict[str, Any]]:
         return []
 
+    def inspect_window_controls(self, app_name: str = "", limit: int = 80) -> list[dict[str, Any]]:
+        return []
+
     def get_active_window(self) -> dict[str, Any]:
         return self._response() | {"title": "", "app": ""}
 

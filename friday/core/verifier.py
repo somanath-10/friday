@@ -53,7 +53,7 @@ def verify_step_sync(step: PlanStep, result: StepExecutionResult | str) -> Verif
     if method in {"exit_code", "command_output_ok"}:
         return VerificationResult(step.id, normalized.status == "succeeded", method, normalized.output[:300])
 
-    if method in {"output_nonempty", "text_contains", "window_active", "screen_contains"}:
+    if method in {"output_nonempty", "text_contains", "window_active", "screen_contains", "dynamic_goal_progress"}:
         return VerificationResult(step.id, bool(normalized.output.strip()), method, normalized.output[:300])
 
     return VerificationResult(step.id, True, method, "No specialized verifier for this method; command result was successful.")

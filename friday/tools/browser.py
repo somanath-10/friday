@@ -976,6 +976,125 @@ def register(mcp):
             return f"Error pressing browser key: {e}"
 
     @mcp.tool()
+    async def browser_dynamic_loop(goal: str, max_steps: int = 6) -> str:
+        """
+        Run a generic observe-act-verify browser loop using DOM/accessibility-style
+        element maps. This is intentionally site-agnostic: it chooses elements by
+        role, label, placeholder, href, and visible text rather than hardcoded
+        website selectors.
+        """
+        try:
+            from friday.browser.operator import BrowserAction, BrowserOperator, build_element_map_from_records, infer_site_url
+
+            operator = BrowserOperator()
+            history: list[dict[str, object]] = []
+            lines: list[str] = []
+
+            async def observe_current():
+                if _browser_backend == "http":
+                    if not _http_state:
+                        return build_element_map_from_records([], title="", url="", visible_text="")
+                    return build_element_map_from_records(
+                        list(_http_state.get("elements", [])),
+                        title=str(_http_state.get("title", "")),
+                        url=str(_http_state.get("url", "")),
+                        visible_text=str(_http_state.get("text", "")),
+                    )
+                page = await _get_page()
+                elements = await _get_interactive_elements(page)
+                return build_element_map_from_records(
+                    elements,
+                    title=await page.title(),
+                    url=page.url,
+                    visible_text=await page.locator("body").inner_text(timeout=3000),
+                )
+
+            async def execute_action(action: BrowserAction) -> str:
+                if action.type == "complete":
+                    return action.reason or "Goal complete."
+                if action.type == "navigate":
+                    if _browser_backend == "http":
+                        state = await _http_navigate(action.url)
+                        return f"Navigated to {state.get('url', action.url)}"
+                    page = await _get_page()
+                    await page.goto(action.url, wait_until="domcontentloaded")
+                    return f"Navigated to {page.url}"
+                if action.type == "type_into_element":
+                    index = int(action.element_id.rsplit(":", 1)[-1])
+                    if _browser_backend == "http":
+                        return "HTTP fallback can observe pages but cannot type into forms."
+                    page = await _get_page()
+                    result = await _type_interactive_index(page, index, action.text, bool(action.key))
+                    if action.key:
+                        await page.keyboard.press(action.key)
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                        except Exception:
+                            pass
+                    return result.get("message") or f"Typed into element {action.element_id}."
+                if action.type == "click_element":
+                    index = int(action.element_id.rsplit(":", 1)[-1])
+                    if _browser_backend == "http":
+                        if not _http_state:
+                            return "No HTTP page state is available."
+                        items = list(_http_state.get("elements", []))
+                        if index <= 0 or index > len(items):
+                            return f"No element at index {index}."
+                        href = items[index - 1].get("href")
+                        if not href:
+                            return "HTTP fallback can only click links with href targets."
+                        state = await _http_navigate(str(href))
+                        return f"Clicked link and navigated to {state.get('url', href)}"
+                    page = await _get_page()
+                    result = await _click_interactive_index(page, index)
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    except Exception:
+                        pass
+                    return result.get("message") or f"Clicked element {action.element_id}."
+                if action.type == "screenshot_fallback":
+                    if _browser_backend == "http":
+                        return "Screenshot fallback requires Playwright mode."
+                    page = await _get_page()
+                    target = Path(os.environ.get("FRIDAY_WORKSPACE_DIR", str(Path.cwd() / "workspace"))) / "screenshots" / "browser_dynamic_fallback.png"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    await page.screenshot(path=str(target), full_page=True)
+                    return f"Saved browser screenshot fallback: {target}"
+                return f"Unsupported dynamic browser action: {action.type}"
+
+            if not _page and _browser_backend != "http":
+                target_url = infer_site_url(goal)
+                if target_url:
+                    page = await _get_page()
+                    await page.goto(target_url, wait_until="domcontentloaded")
+                    lines.append(f"Navigated to {target_url}")
+            elif _browser_backend == "http" and not _http_state:
+                target_url = infer_site_url(goal)
+                if target_url:
+                    state = await _http_navigate(target_url)
+                    lines.append(f"Navigated to {state.get('url', target_url)}")
+
+            for step in range(1, max(1, max_steps) + 1):
+                observation = await observe_current()
+                action = operator.decide_next_action(goal, observation, history)
+                history.append(action.to_dict())
+                decision = operator.permission_for_action(action, observation)
+                lines.append(f"Step {step}: selected {action.type} ({action.reason})")
+                if decision.get("decision") != "allow":
+                    lines.append(f"Permission {decision.get('decision')}: {decision.get('reason')}")
+                    break
+                result = await execute_action(action)
+                lines.append(f"Result: {result}")
+                if action.type in {"complete", "screenshot_fallback"}:
+                    break
+                if "search" in goal.lower() and action.type == "type_into_element":
+                    break
+
+            return "\n".join(lines) if lines else "No dynamic browser action was selected."
+        except Exception as e:
+            return f"Error in dynamic browser loop: {e}"
+
+    @mcp.tool()
     async def browser_scroll(direction: str = "down", amount: int = 800) -> str:
         """
         Scroll the active page up or down by a pixel amount.

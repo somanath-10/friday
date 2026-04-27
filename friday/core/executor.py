@@ -465,6 +465,7 @@ def _plan_step_from_dict(payload: dict[str, Any]) -> PlanStep:
         verification_method=str(payload.get("verification_method", "")),
         tool_name=str(payload.get("tool_name", "")),
         verification_target=str(payload.get("verification_target", "")),
+        fallback_strategy=str(payload.get("fallback_strategy", "")),
     )
 
 

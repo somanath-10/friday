@@ -313,6 +313,13 @@ def classify_tool_call(tool_name: str, arguments: dict[str, Any] | None = None) 
         return classify_file_operation("move" if name == "move_path" else "copy", overwrite=bool(args.get("overwrite")))
     if name in {"browser_submit_sensitive_form", "browser_submit_form"}:
         return classify_browser_action("submit")
+    if name == "browser_dynamic_loop":
+        goal = str(args.get("goal", "")).lower()
+        if any(term in goal for term in ("login", "password", "bank", "payment", "purchase", "checkout", "send", "submit")):
+            return classify_browser_action("submit")
+        if any(term in goal for term in ("type", "draft", "fill")):
+            return classify_browser_action("type")
+        return classify_browser_action("read")
     if name == "browser_download_executable":
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Downloading executable files requires approval.", "browser")
     if name == "browser_download":
@@ -324,6 +331,11 @@ def classify_tool_call(tool_name: str, arguments: dict[str, Any] | None = None) 
             return classify_browser_action("type")
         if "click" in name:
             return classify_browser_action("click")
+    if name == "desktop_dynamic_loop":
+        goal = str(args.get("goal", "")).lower()
+        if any(term in goal for term in ("close", "password", "admin", "settings")):
+            return classify_desktop_action("close_app")
+        return classify_desktop_action("type_text" if any(term in goal for term in ("type", "press", "click")) else "inspect_screen")
     if name in {"open_application", "focus_application", "type_text", "press_key", "gui_click"}:
         return classify_desktop_action("open_app" if name == "open_application" else name)
 
