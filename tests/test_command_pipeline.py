@@ -141,7 +141,7 @@ def test_structured_executor_requires_permission_for_delete(mock_workspace):
     assert result.handled is True
     assert result.success is False
     assert result.permission_pending is True
-    assert not invoker.calls
+    assert invoker.calls[0][0] == "list_directory_tree"
     assert "[Approval Required]" in result.reply
     assert result.approval_requests
     assert result.approval_requests[0]["approval_id"].startswith("apr_")
@@ -165,7 +165,7 @@ def test_resume_approved_structured_command_runs_pending_step(mock_workspace):
 
     assert resumed.success is True
     assert invoker.calls
-    assert invoker.calls[0][0] == "delete_path"
+    assert invoker.calls[-1][0] == "delete_path"
 
 
 def test_run_structured_command_dry_run_desktop():
@@ -182,6 +182,15 @@ def test_run_structured_command_dry_run_desktop():
     assert invoker.calls == []
 
 
+def test_build_execution_plan_preserves_unquoted_type_text():
+    route = route_user_command("open notepad and type meeting notes")
+    plan = build_execution_plan("open notepad and type meeting notes", route)
+
+    assert plan.supported is True
+    assert plan.steps[0].tool_name == "open_application"
+    assert plan.steps[1].parameters["text"] == "meeting notes"
+
+
 def test_run_structured_command_executes_and_verifies_file_write(mock_workspace):
     invoker = FakeToolInvoker()
 
@@ -191,7 +200,7 @@ def test_run_structured_command_executes_and_verifies_file_write(mock_workspace)
 
     assert result.handled is True
     assert result.success is True
-    assert (mock_workspace / "report.md").exists()
+    assert (mock_workspace / "reports" / "report.md").exists()
     assert any(event["name"] == "write_file" for event in result.tool_events)
 
 

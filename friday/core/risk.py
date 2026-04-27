@@ -118,6 +118,50 @@ def _first_command_token(command: str) -> str:
     return Path(parts[0]).name.lower() if parts else ""
 
 
+def _command_parts(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return command.strip().split()
+
+
+def _looks_like_readonly_python(parts: list[str]) -> bool:
+    if not parts:
+        return False
+    executable = Path(parts[0]).name.lower()
+    if executable not in {"python", "python3", "py"}:
+        return False
+    lowered = [part.lower() for part in parts[1:]]
+    if not lowered:
+        return False
+    readonly_flags = {"--version", "-v", "-vv", "-h", "--help"}
+    if lowered[0] in readonly_flags:
+        return True
+    return any(part in {"pytest", "unittest"} for part in lowered[:3])
+
+
+def _looks_like_readonly_git(parts: list[str]) -> bool:
+    if not parts or Path(parts[0]).name.lower() != "git":
+        return False
+    if len(parts) == 1:
+        return False
+    return parts[1].lower() in {"status", "diff", "log", "show", "branch", "rev-parse"}
+
+
+def _looks_like_project_test(parts: list[str]) -> bool:
+    lowered = [part.lower() for part in parts]
+    if not lowered:
+        return False
+    first = Path(lowered[0]).name
+    if first == "pytest":
+        return True
+    if first == "npm" and len(lowered) > 1 and lowered[1] in {"test", "run"}:
+        return "test" in lowered[1:3]
+    if first == "uv" and any(part == "pytest" for part in lowered[:4]):
+        return True
+    return False
+
+
 def classify_shell_command(command: str) -> RiskAssessment:
     normalized = _normalized_command(command)
     if not normalized:
@@ -137,22 +181,40 @@ def classify_shell_command(command: str) -> RiskAssessment:
             "shell",
         )
 
+    if any(marker in normalized for marker in ("|", ";", "&&", "||", "$(", "`")):
+        return RiskAssessment(RiskLevel.REVERSIBLE_CHANGE, "Compound shell command requires conservative handling.", "shell")
+
     if "git push" in normalized:
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Pushing code requires approval.", "shell")
     if "git commit" in normalized:
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Committing code requires approval.", "shell")
-    if any(token in normalized for token in ("pip install", "uv pip install", "npm install", "brew install", "winget install")):
+    if any(token in normalized for token in ("pip install", "uv pip install", "npm install", "brew install", "winget install", "apt install", "apt-get install")):
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Installing software/packages requires approval.", "shell")
     if normalized.startswith(("sudo ", "su ", "doas ")):
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Elevated/admin command requires approval.", "shell")
     if normalized.startswith(("rm ", "rmdir ", "del ", "erase ")):
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Delete command requires approval.", "shell")
-    if any(token in normalized for token in (" > ", ">>", "mv ", "cp ", "chmod ", "chown ")):
+    if any(token in normalized for token in (" > ", ">>", "mv ", "cp ", "chmod ", "chown ", "git add")):
         return RiskAssessment(RiskLevel.REVERSIBLE_CHANGE, "Command may modify files or permissions.", "shell")
 
+    parts = _command_parts(command)
+    if _looks_like_project_test(parts):
+        return RiskAssessment(RiskLevel.READ_ONLY, "Command runs project tests.", "shell")
+    if _looks_like_readonly_python(parts):
+        return RiskAssessment(RiskLevel.READ_ONLY, "Python command appears read-only or test-oriented.", "shell")
+    if _looks_like_readonly_git(parts):
+        return RiskAssessment(RiskLevel.READ_ONLY, "Git command is read-only.", "shell")
+
     first = _first_command_token(command)
-    if first in READONLY_COMMANDS:
-        return RiskAssessment(RiskLevel.READ_ONLY, "Command appears read-only or project-test oriented.", "shell")
+    if first in {"pwd", "ls", "dir", "whoami", "id", "date", "cat", "head", "tail", "wc", "rg", "grep"}:
+        return RiskAssessment(RiskLevel.READ_ONLY, "Command appears read-only.", "shell")
+
+    if first in {"python", "python3", "py", "node", "npm", "uv", "git"}:
+        return RiskAssessment(
+            RiskLevel.REVERSIBLE_CHANGE,
+            "Interpreter/package/git command may change local state unless it is a recognized read-only/test command.",
+            "shell",
+        )
 
     return RiskAssessment(RiskLevel.REVERSIBLE_CHANGE, "Unknown command may change local state.", "shell")
 
@@ -208,7 +270,14 @@ def classify_tool_call(tool_name: str, arguments: dict[str, Any] | None = None) 
         return classify_file_operation("read")
     if name in {"delete_path", "delete_workspace_file"}:
         return classify_file_operation("delete", str(args.get("path") or args.get("filename") or ""))
+    if name == "create_folder":
+        return classify_file_operation("mkdir")
+    if name == "append_to_file":
+        return classify_file_operation("append")
     if name in {"write_file", "create_document"}:
+        operation = str(args.get("operation", "")).strip().lower()
+        if operation == "append":
+            return classify_file_operation("append")
         return classify_file_operation("overwrite" if args.get("overwrite") else "write_new")
     if name in {"copy_path", "move_path"}:
         return classify_file_operation("move" if name == "move_path" else "copy", overwrite=bool(args.get("overwrite")))

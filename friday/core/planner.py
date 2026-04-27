@@ -1,5 +1,10 @@
 """
-Simple structured planner for Phase 3.
+Deterministic structured planner for FRIDAY.
+
+The planner intentionally handles safe, repeatable workflows itself and leaves
+open-ended reasoning or repair tasks to the legacy LLM tool loop. That keeps
+local control permission-aware without pretending every natural-language
+request can be solved by a fixed template.
 """
 
 from __future__ import annotations
@@ -16,6 +21,24 @@ from friday.core.risk import (
     classify_file_operation,
 )
 from friday.core.router import route_intent
+
+
+SPECIAL_PATH_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("downloads", "download folder", "download directory"), "Downloads"),
+    (("documents", "document folder", "document directory"), "Documents"),
+    (("desktop",), "Desktop"),
+    (("reports folder", "report folder", "reports directory"), "workspace/reports"),
+    (("workspace", "work space"), "workspace"),
+)
+
+APP_ALIASES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("notepad",), "Notepad"),
+    (("chrome", "google chrome"), "Chrome"),
+    (("edge", "microsoft edge"), "Edge"),
+    (("vscode", "vs code", "visual studio code"), "Visual Studio Code"),
+    (("calculator", "calc"), "Calculator"),
+    (("terminal", "command prompt", "powershell"), "Terminal"),
+)
 
 
 def _step(
@@ -48,44 +71,155 @@ def _extract_quoted_text(message: str) -> str:
     return match.group(1) if match else ""
 
 
+def _special_path_from_text(message: str) -> str:
+    lowered = message.lower()
+    for markers, path in SPECIAL_PATH_HINTS:
+        if any(marker in lowered for marker in markers):
+            return path
+    return ""
+
+
 def _extract_path_hint(message: str) -> str:
     quoted = _extract_quoted_text(message)
-    if quoted:
+    if quoted and any(sep in quoted for sep in ("/", "\\", ".")):
         return quoted
-    match = re.search(r"\b(?:delete|remove|move|rename|copy)\s+([^\s]+)", message, flags=re.IGNORECASE)
+
+    special = _special_path_from_text(message)
+    if special:
+        return special
+
+    match = re.search(r"\b(?:delete|remove|list|read|open|move|rename|copy)\s+([^\s]+)", message, flags=re.IGNORECASE)
     if not match:
         return ""
     candidate = match.group(1).strip(".,;:()[]{}")
-    blocked_words = {"all", "files", "folders", "everything"}
+    blocked_words = {"all", "files", "folders", "everything", "the", "my"}
     return "" if candidate.lower() in blocked_words else candidate
+
+
+def _extract_move_paths(message: str) -> tuple[str, str]:
+    lowered = message.lower()
+    source = _special_path_from_text(message) or _extract_path_hint(message)
+    destination = ""
+    to_match = re.search(r"\bto\s+([^,.]+)", lowered)
+    if to_match:
+        destination = to_match.group(1).strip().strip("'").strip('"')
+        for markers, path in SPECIAL_PATH_HINTS:
+            if any(marker in destination for marker in markers):
+                destination = path
+                break
+    return source, destination
+
+
+def _extract_app_name(message: str) -> str:
+    lowered = message.lower()
+    for markers, app_name in APP_ALIASES:
+        if any(marker in lowered for marker in markers):
+            return app_name
+    quoted = _extract_quoted_text(message)
+    if quoted:
+        return quoted
+    match = re.search(r"\bopen\s+([a-zA-Z0-9_. -]+?)(?:\s+and\s+|\s+then\s+|$)", message, flags=re.IGNORECASE)
+    if match:
+        candidate = match.group(1).strip(" .,;:")
+        if candidate:
+            return candidate
+    return "requested application"
+
+
+def _extract_type_text(message: str) -> str:
+    quoted = _extract_quoted_text(message)
+    if quoted:
+        return quoted
+    match = re.search(r"\btype\s+(.+)$", message, flags=re.IGNORECASE)
+    if not match:
+        return "hello"
+    text = match.group(1).strip()
+    text = re.sub(
+        r"\s+(?:in|into|inside)\s+(?:notepad|chrome|edge|the app|application).*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text.strip(" .,;:") or "hello"
 
 
 def _file_plan(message: str, intent: IntentResult) -> list[PlanStep]:
     lowered = message.lower()
-    if "delete" in lowered or "remove" in lowered:
-        assessment = classify_file_operation("delete")
+    if any(word in lowered for word in ("list", "show files", "tree")) and "delete" not in lowered:
+        assessment = classify_file_operation("list")
         return [
             _step(
                 1,
-                description="Preview and request approval before deleting the requested path.",
+                description="List the requested directory through the filesystem runtime.",
                 executor="files",
-                action_type="delete_path",
-                parameters={"path": _extract_path_hint(message)},
-                expected_result="Deletion is blocked until the user approves it.",
+                action_type="list_tree",
+                parameters={"path": _extract_path_hint(message) or "Downloads", "limit": 200},
+                expected_result="Directory entries are returned without modifying files.",
                 risk_level=assessment.level,
-                needs_approval=True,
-                verification_method="path_absent",
+                needs_approval=False,
+                verification_method="output_nonempty",
+            )
+        ]
+
+    if "delete" in lowered or "remove" in lowered:
+        target = _extract_path_hint(message)
+        preview = _step(
+            1,
+            description="Preview the destructive file request before any deletion is possible.",
+            executor="files",
+            action_type="list_tree",
+            parameters={"path": target or "Downloads", "limit": 500},
+            expected_result="User can see the affected files before approval.",
+            risk_level=RiskLevel.READ_ONLY,
+            needs_approval=False,
+            verification_method="output_nonempty",
+        )
+        assessment = classify_file_operation("delete")
+        delete = _step(
+            2,
+            description="Request approval before deleting the selected path or files.",
+            executor="files",
+            action_type="delete_path",
+            parameters={"path": target, "requires_preview": True},
+            expected_result="Deletion is blocked until the user approves it.",
+            risk_level=assessment.level,
+            needs_approval=True,
+            verification_method="path_absent",
+        )
+        return [preview, delete]
+
+    if any(word in lowered for word in ("move", "rename", "copy")):
+        source, destination = _extract_move_paths(message)
+        operation = "copy" if "copy" in lowered else "move"
+        assessment = classify_file_operation(operation)
+        return [
+            _step(
+                1,
+                description=f"{operation.title()} the requested file or folder after path safety checks.",
+                executor="files",
+                action_type="copy_path" if operation == "copy" else "move_path",
+                parameters={"source_path": source, "destination_path": destination, "overwrite": False},
+                expected_result="Path exists at the destination and original state is preserved or moved safely.",
+                risk_level=assessment.level,
+                needs_approval=assessment.level >= RiskLevel.SENSITIVE_ACTION,
+                verification_method="file_exists",
             )
         ]
 
     assessment = classify_file_operation("write_new")
+    path_text = re.sub(r"['\"][^'\"]+['\"]", "", lowered)
+    wants_report_path = any(
+        phrase in path_text
+        for phrase in ("report file", "reports folder", "report folder", "make report", "save report")
+    )
+    default_path = "workspace/reports/report.md" if wants_report_path else "workspace/generated_by_friday.txt"
     return [
         _step(
             1,
             description="Create or save the requested file in the workspace.",
             executor="files",
             action_type="write_file",
-            parameters={"path": "workspace/generated_by_friday.txt", "content": _extract_quoted_text(message) or message},
+            parameters={"path": default_path, "content": _extract_quoted_text(message) or message},
             expected_result="File exists at the target path.",
             risk_level=assessment.level,
             needs_approval=False,
@@ -122,7 +256,7 @@ def _shell_or_code_plan(message: str, intent: IntentResult) -> list[PlanStep]:
 
 def _desktop_plan(message: str) -> list[PlanStep]:
     assessment = classify_desktop_action("open_app")
-    app_name = "Notepad" if "notepad" in message.lower() else _extract_quoted_text(message) or "requested application"
+    app_name = _extract_app_name(message)
     steps = [
         _step(
             1,
@@ -136,7 +270,6 @@ def _desktop_plan(message: str) -> list[PlanStep]:
             verification_method="window_active",
         )
     ]
-    quoted = _extract_quoted_text(message)
     if "type" in message.lower():
         type_assessment = classify_desktop_action("type_text")
         steps.append(
@@ -145,7 +278,7 @@ def _desktop_plan(message: str) -> list[PlanStep]:
                 description="Type the requested text into the active application.",
                 executor="desktop",
                 action_type="type_text",
-                parameters={"text": quoted or "hello"},
+                parameters={"text": _extract_type_text(message)},
                 expected_result="Text appears in the active application.",
                 risk_level=type_assessment.level,
                 needs_approval=False,
@@ -156,9 +289,39 @@ def _desktop_plan(message: str) -> list[PlanStep]:
 
 
 def _browser_or_research_plan(message: str, intent: IntentResult) -> list[PlanStep]:
-    assessment = classify_browser_action("read")
+    lowered = message.lower()
     executor = "research" if intent.intent == Intent.RESEARCH else "browser"
-    return [
+    steps: list[PlanStep] = []
+    if any(word in lowered for word in ("login", "password", "submit", "send", "purchase", "payment")):
+        read_assessment = classify_browser_action("navigate")
+        sensitive = classify_browser_action("submit")
+        return [
+            _step(
+                1,
+                description="Open or observe the requested browser destination before any sensitive action.",
+                executor="browser",
+                action_type="browser_observe",
+                parameters={"query": message},
+                expected_result="Current page state is visible before credentials or submission.",
+                risk_level=read_assessment.level,
+                needs_approval=False,
+                verification_method="text_contains",
+            ),
+            _step(
+                2,
+                description="Stop and request approval before entering credentials or submitting a form.",
+                executor="browser",
+                action_type="browser_submit_form",
+                parameters={"reason": "login_or_sensitive_form", "query": message},
+                expected_result="No sensitive form is submitted without approval.",
+                risk_level=sensitive.level,
+                needs_approval=True,
+                verification_method="permission_required",
+            ),
+        ]
+
+    assessment = classify_browser_action("read")
+    steps.append(
         _step(
             1,
             description="Observe or search the requested web content before taking actions.",
@@ -170,7 +333,30 @@ def _browser_or_research_plan(message: str, intent: IntentResult) -> list[PlanSt
             needs_approval=False,
             verification_method="text_contains",
         )
-    ]
+    )
+    if any(word in lowered for word in ("save", "report", "summary")):
+        file_assessment = classify_file_operation("write_new")
+        steps.append(
+            _step(
+                2,
+                description="Save a local report placeholder after research output is produced.",
+                executor="files",
+                action_type="write_file",
+                parameters={
+                    "path": "workspace/reports/research_report.md",
+                    "content": (
+                        "# Research Report\n\n"
+                        f"Topic: {message}\n\n"
+                        "Run the full local chat workflow to populate this report with cited sources."
+                    ),
+                },
+                expected_result="Report file exists in the workspace reports folder.",
+                risk_level=file_assessment.level,
+                needs_approval=False,
+                verification_method="file_exists",
+            )
+        )
+    return steps
 
 
 def create_plan(user_message: str, intent_result: IntentResult | None = None) -> Plan:
@@ -204,10 +390,23 @@ def create_plan(user_message: str, intent_result: IntentResult | None = None) ->
     return Plan(goal=user_message, intent=intent, steps=steps)
 
 
+def _should_use_legacy_for_complex_task(lowered: str, route: IntentRoute) -> bool:
+    if route.should_use_legacy_fallback or route.intent == "mixed":
+        return True
+    if route.intent == "code" and any(word in lowered for word in ("fix", "patch", "repair")):
+        return True
+    if route.intent in {"browser", "research"} and any(word in lowered for word in ("login", "password")):
+        return True
+    dynamic_report = any(word in lowered for word in ("latest", "news", "research", "search")) and any(
+        word in lowered for word in ("save", "report", "summary", "summarize")
+    )
+    return dynamic_report
+
+
 def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan:
-    """Compatibility planning surface for the structured command tests."""
+    """Compatibility planning surface for the structured command tests and local chat bridge."""
     lowered = user_message.strip().lower()
-    if route.should_use_legacy_fallback or "fix the error" in lowered or route.intent == "mixed":
+    if _should_use_legacy_for_complex_task(lowered, route):
         return ExecutionPlan(
             goal=user_message,
             intent=route.intent,
@@ -216,7 +415,10 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
             suggested_executor=route.suggested_executor,
             steps=[],
             supported=False,
-            notes=["This request should fall back to the legacy local chat loop for now."],
+            notes=[
+                "This request needs dynamic reasoning, credentials, source synthesis, or code repair; "
+                "falling back to the legacy local chat loop for now."
+            ],
         )
 
     intent_result = IntentResult(
@@ -236,17 +438,20 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
                 "type_text": "type_text",
                 "write_file": "write_file",
                 "delete_path": "delete_path",
+                "list_tree": "list_directory_tree",
+                "copy_path": "copy_path",
+                "move_path": "move_path",
                 "shell_command": "run_shell_command",
                 "browser_observe": "search_web",
+                "browser_submit_form": "browser_submit_form",
                 "status": "get_host_control_status",
             }.get(step.action_type, step.action_type)
 
         parameters = dict(step.parameters)
         if step.action_type == "write_file":
-            default_name = "report.md" if "report" in lowered else "generated_by_friday.txt"
-            path_value = default_name if "report" in lowered else str(parameters.get("path", default_name))
+            path_value = str(parameters.get("path") or ("report.md" if "report" in lowered else "generated_by_friday.txt"))
             parameters = {
-                "file_path": Path(path_value).name,
+                "file_path": Path(path_value).name if not path_value.startswith("workspace/") else path_value,
                 "content": parameters.get("content", ""),
             }
         verification_target = ""
@@ -256,6 +461,8 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
             verification_target = str(resolve_user_path(str(parameters["file_path"])))
         elif step.action_type == "open_app":
             verification_target = str(parameters.get("app_name", ""))
+        elif step.action_type in {"delete_path", "list_tree"}:
+            verification_target = str(parameters.get("path", ""))
 
         verification_method = step.verification_method
         if step.action_type == "shell_command":

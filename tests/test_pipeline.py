@@ -52,8 +52,15 @@ def test_pipeline_pauses_for_sensitive_action(monkeypatch, tmp_path):
     result = run_command_pipeline("delete all files in Downloads", dry_run=True)
 
     assert result.status == "paused"
-    assert result.step_results[0].status == "permission_required"
+    assert any(step.status == "permission_required" for step in result.step_results)
     assert any(event["event_type"] == EventType.PERMISSION_REQUIRED.value for event in result.events)
+
+
+def test_planner_preserves_desktop_type_text():
+    plan = create_plan("open notepad and type meeting notes")
+
+    assert plan.intent.intent == Intent.DESKTOP
+    assert plan.steps[1].parameters["text"] == "meeting notes"
 
 
 def test_pipeline_can_execute_safe_file_write(monkeypatch, tmp_path):

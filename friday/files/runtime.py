@@ -158,10 +158,24 @@ class FileRuntime:
         action = plan_step.action_type
         if action in {"write_file", "files.write"}:
             return self.write_new_file(str(params.get("path") or params.get("file_path") or "generated.txt"), str(params.get("content", "")), dry_run=dry_run)
+        if action in {"append_file", "files.append"}:
+            return self.append_file(str(params.get("path") or params.get("file_path") or "generated.txt"), str(params.get("content", "")), dry_run=dry_run)
+        if action in {"list_tree", "files.list", "preview_delete"}:
+            return self.list_tree(str(params.get("path") or params.get("directory") or "."), limit=int(params.get("limit", 200)))
         if action in {"delete_path", "files.delete"}:
             return self.delete_path(str(params.get("path") or params.get("file_path") or ""), dry_run=dry_run)
         if action in {"copy_path", "files.copy"}:
-            return self.copy_path(str(params.get("source_path", "")), str(params.get("destination_path", "")), dry_run=dry_run)
+            return self.copy_path(
+                str(params.get("source_path", "")),
+                str(params.get("destination_path", "")),
+                overwrite=bool(params.get("overwrite", False)),
+                dry_run=dry_run,
+            )
         if action in {"move_path", "files.move", "rename_path"}:
-            return self.move_path(str(params.get("source_path", "")), str(params.get("destination_path", "")), dry_run=dry_run)
+            return self.move_path(
+                str(params.get("source_path", "")),
+                str(params.get("destination_path", "")),
+                overwrite=bool(params.get("overwrite", False)),
+                dry_run=dry_run,
+            )
         return FileResult(False, action, f"No file runtime handler for action: {action}")

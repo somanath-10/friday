@@ -206,8 +206,23 @@ def register(mcp):
         """
         try:
             resolved_path = resolve_user_path(folder_path)
+            decision, safety_message = guard_tool_call(
+                "create_folder",
+                {"path": str(resolved_path), "overwrite": False},
+                subject=str(resolved_path),
+            )
+            if safety_message:
+                return safety_message
             resolved_path.mkdir(parents=True, exist_ok=True)
-            return f"Folder ready: {resolved_path}"
+            output = f"Folder ready: {resolved_path}"
+            audit_allowed_tool(
+                "create_folder",
+                command=str(resolved_path),
+                risk_level=int(decision.risk_level),
+                decision=decision.decision,
+                result=output,
+            )
+            return output
         except Exception as e:
             return f"Error creating folder: {str(e)}"
 
@@ -285,10 +300,25 @@ def register(mcp):
         """
         try:
             resolved_path = resolve_user_path(file_path)
+            decision, safety_message = guard_tool_call(
+                "append_to_file",
+                {"file_path": str(resolved_path), "overwrite": False, "operation": "append"},
+                subject=str(resolved_path),
+            )
+            if safety_message:
+                return safety_message
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
             with open(resolved_path, "a", encoding="utf-8") as f:
                 f.write(content)
-            return f"Appended {len(content)} characters to {resolved_path}"
+            output = f"Appended {len(content)} characters to {resolved_path}"
+            audit_allowed_tool(
+                "append_to_file",
+                command=str(resolved_path),
+                risk_level=int(decision.risk_level),
+                decision=decision.decision,
+                result=output,
+            )
+            return output
         except Exception as e:
             return f"Error appending to file: {str(e)}"
 

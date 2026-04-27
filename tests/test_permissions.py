@@ -12,12 +12,23 @@ def test_risk_classifies_readonly_and_dangerous_shell():
     assert classify_shell_command("git status").level == RiskLevel.READ_ONLY
     assert classify_shell_command("rm -rf /").level == RiskLevel.DANGEROUS_RESTRICTED
     assert classify_shell_command("pip install requests").level == RiskLevel.SENSITIVE_ACTION
+    assert classify_shell_command("python fix_script.py").level == RiskLevel.REVERSIBLE_CHANGE
 
 
 def test_file_risk_classification():
     assert classify_file_operation("read").level == RiskLevel.READ_ONLY
     assert classify_file_operation("create").level == RiskLevel.SAFE_WRITE
     assert classify_file_operation("delete").level == RiskLevel.SENSITIVE_ACTION
+
+
+def test_append_and_create_folder_are_safe_file_writes():
+    append_decision = check_tool_permission("append_to_file", {"file_path": "workspace/demo.txt"})
+    folder_decision = check_tool_permission("create_folder", {"path": "workspace/reports"})
+
+    assert append_decision.decision == "allow"
+    assert append_decision.risk_level == RiskLevel.SAFE_WRITE
+    assert folder_decision.decision == "allow"
+    assert folder_decision.risk_level == RiskLevel.SAFE_WRITE
 
 
 def test_permissions_config_loading(tmp_path):

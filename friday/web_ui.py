@@ -179,6 +179,8 @@ def _render_page(request: Request) -> str:
         --warn: #ffc857;
         --shadow: 0 28px 90px rgba(0, 0, 0, 0.35);
         --radius: 24px;
+        --pointer-x: 50vw;
+        --pointer-y: 18vh;
       }}
 
       * {{
@@ -212,11 +214,79 @@ def _render_page(request: Request) -> str:
         pointer-events: none;
       }}
 
+      .pointer-field {{
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        overflow: hidden;
+        z-index: 0;
+      }}
+
+      .pointer-aura,
+      .pointer-sphere {{
+        position: absolute;
+        left: var(--pointer-x);
+        top: var(--pointer-y);
+        transform: translate(-50%, -50%);
+        transition: transform 120ms ease-out, left 120ms ease-out, top 120ms ease-out, opacity 180ms ease-out;
+      }}
+
+      .pointer-aura {{
+        width: 260px;
+        height: 260px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(42, 209, 190, 0.16), rgba(42, 209, 190, 0.05) 35%, transparent 72%);
+        filter: blur(10px);
+        opacity: 0.92;
+      }}
+
+      .pointer-sphere {{
+        width: 132px;
+        height: 132px;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.12);
+        background:
+          radial-gradient(circle at 32% 28%, rgba(255,255,255,0.24), rgba(255,255,255,0.06) 18%, transparent 38%),
+          radial-gradient(circle at 68% 70%, rgba(255, 123, 71, 0.18), transparent 34%),
+          radial-gradient(circle at center, rgba(42, 209, 190, 0.14), rgba(42, 209, 190, 0.03) 55%, transparent 76%);
+        box-shadow:
+          0 0 50px rgba(42, 209, 190, 0.12),
+          inset 0 0 28px rgba(255,255,255,0.05);
+        backdrop-filter: blur(12px);
+        opacity: 0.86;
+      }}
+
+      .pointer-sphere::before,
+      .pointer-sphere::after {{
+        content: "";
+        position: absolute;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.55);
+        box-shadow: 0 0 12px rgba(255,255,255,0.25);
+      }}
+
+      .pointer-sphere::before {{
+        width: 6px;
+        height: 6px;
+        left: 20px;
+        top: 30px;
+      }}
+
+      .pointer-sphere::after {{
+        width: 4px;
+        height: 4px;
+        right: 26px;
+        bottom: 24px;
+        background: rgba(42, 209, 190, 0.72);
+      }}
+
       .shell {{
         width: min(1180px, calc(100% - 28px));
         margin: 24px auto 36px;
         display: grid;
         gap: 20px;
+        position: relative;
+        z-index: 1;
       }}
 
       .hero {{
@@ -238,6 +308,53 @@ def _render_page(request: Request) -> str:
         right: -60px;
         border-radius: 50%;
         background: radial-gradient(circle, rgba(42, 209, 190, 0.22), transparent 68%);
+      }}
+
+      .hero-sphere {{
+        position: absolute;
+        right: 34px;
+        bottom: 18px;
+        width: 154px;
+        height: 154px;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.08);
+        background:
+          radial-gradient(circle at 30% 28%, rgba(255,255,255,0.18), rgba(255,255,255,0.04) 16%, transparent 34%),
+          radial-gradient(circle at center, rgba(255, 123, 71, 0.12), rgba(42, 209, 190, 0.09) 44%, transparent 72%);
+        box-shadow:
+          0 0 40px rgba(255, 123, 71, 0.12),
+          inset 0 0 26px rgba(255,255,255,0.04);
+        opacity: 0.88;
+      }}
+
+      .hero-sphere-dot {{
+        position: absolute;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.72);
+        box-shadow: 0 0 10px rgba(255,255,255,0.24);
+      }}
+
+      .hero-sphere-dot.dot-a {{
+        width: 5px;
+        height: 5px;
+        top: 30px;
+        left: 34px;
+      }}
+
+      .hero-sphere-dot.dot-b {{
+        width: 4px;
+        height: 4px;
+        right: 28px;
+        top: 56px;
+        background: rgba(42, 209, 190, 0.8);
+      }}
+
+      .hero-sphere-dot.dot-c {{
+        width: 3px;
+        height: 3px;
+        left: 72px;
+        bottom: 24px;
+        background: rgba(255, 200, 87, 0.85);
       }}
 
       .eyebrow {{
@@ -705,6 +822,10 @@ def _render_page(request: Request) -> str:
     </style>
   </head>
   <body>
+    <div class="pointer-field" aria-hidden="true">
+      <div class="pointer-aura"></div>
+      <div class="pointer-sphere"></div>
+    </div>
     <main class="shell">
       <section class="hero">
         <div class="eyebrow"><span class="pulse"></span>Local Browser Mode</div>
@@ -717,6 +838,11 @@ def _render_page(request: Request) -> str:
           <a class="button button-primary" href="#pilot-console">Open Console</a>
           <button class="button button-secondary" type="button" data-copy="uv run friday">Copy Run Command</button>
           <button class="button button-secondary" type="button" data-copy="{mcp_server_url}">Copy MCP URL</button>
+        </div>
+        <div class="hero-sphere" aria-hidden="true">
+          <span class="hero-sphere-dot dot-a"></span>
+          <span class="hero-sphere-dot dot-b"></span>
+          <span class="hero-sphere-dot dot-c"></span>
         </div>
       </section>
 
@@ -883,6 +1009,11 @@ def _render_page(request: Request) -> str:
       const emergencyStopButton = document.getElementById("emergency-stop-button");
       const clearStopButton = document.getElementById("clear-stop-button");
       const timelineList = document.getElementById("timeline-list");
+
+      function updatePointerField(x, y) {{
+        document.documentElement.style.setProperty("--pointer-x", `${{x}}px`);
+        document.documentElement.style.setProperty("--pointer-y", `${{y}}px`);
+      }}
 
       let mediaRecorder = null;
       let mediaStream = null;
@@ -1691,6 +1822,14 @@ def _render_page(request: Request) -> str:
 
       emergencyStopButton.addEventListener("click", () => setEmergencyStop("trigger"));
       clearStopButton.addEventListener("click", () => setEmergencyStop("clear"));
+
+      document.addEventListener("pointermove", (event) => {{
+        updatePointerField(event.clientX, event.clientY);
+      }});
+
+      document.addEventListener("pointerleave", () => {{
+        updatePointerField(window.innerWidth * 0.5, window.innerHeight * 0.18);
+      }});
 
       setupMicrophone();
       updateComposerMode();

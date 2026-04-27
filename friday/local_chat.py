@@ -24,6 +24,7 @@ from mcp.client.sse import sse_client
 
 from friday.config import local_browser_setup_issues
 from friday.core.executor import resume_approved_structured_command, run_structured_command
+from friday.safety.approval_gate import list_pending_approvals, resolve_pending_approval
 from friday.tools.memory import record_conversation_turn, store_action_trace
 
 
@@ -137,6 +138,31 @@ TOOL_FAILURE_MARKERS = (
     "timed out after",
 )
 _TOOL_DESCRIPTOR_CACHE: dict[str, tuple[float, tuple["ToolDescriptor", ...]]] = {}
+APPROVAL_ALLOW_PHRASES = {
+    "allow",
+    "approve",
+    "approved",
+    "continue",
+    "do it",
+    "go ahead",
+    "ok do it",
+    "okay do it",
+    "proceed",
+    "yes",
+    "yes approve",
+}
+APPROVAL_DENY_PHRASES = {
+    "cancel",
+    "deny",
+    "denied",
+    "do not",
+    "don't",
+    "dont",
+    "no",
+    "no stop",
+    "reject",
+    "stop",
+}
 
 
 @dataclass
@@ -227,6 +253,135 @@ def _latest_user_message(messages: list[dict[str, str]]) -> str:
         if item.get("role") == "user":
             return item.get("content", "")
     return ""
+
+
+def _normalize_decision_text(message: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9\s]+", " ", message.lower()).split())
+
+
+def _approval_decision_from_message(message: str) -> str | None:
+    normalized = _normalize_decision_text(message)
+    if not normalized:
+        return None
+
+    if normalized in APPROVAL_ALLOW_PHRASES:
+        return "approved"
+    if normalized in APPROVAL_DENY_PHRASES:
+        return "denied"
+
+    tokens = normalized.split()
+    if len(tokens) <= 8:
+        first = tokens[0]
+        if first in {"approve", "approved", "allow", "continue", "proceed", "yes"}:
+            return "approved"
+        if first in {"deny", "denied", "reject", "cancel", "stop", "no"}:
+            return "denied"
+    return None
+
+
+def _approval_mode_from_message(message: str) -> str:
+    normalized = _normalize_decision_text(message)
+    if any(phrase in normalized for phrase in ("this session", "for session", "session approval", "similar actions")):
+        return "session_limited"
+    return "one_time"
+
+
+def _approval_text(record: dict[str, Any]) -> str:
+    request = record.get("request", {}) if isinstance(record, dict) else {}
+    parts = [
+        str(record.get("approval_id", "")),
+        str(request.get("action_summary", "")),
+        str(request.get("tool", "")),
+        str(request.get("command", "")),
+        str(request.get("path", "")),
+        str(request.get("domain", "")),
+        str(request.get("subject", "")),
+    ]
+    return " ".join(part for part in parts if part).lower()
+
+
+def _match_pending_approval(message: str, pending: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not pending:
+        return None
+    if len(pending) == 1:
+        return pending[0]
+
+    normalized = _normalize_decision_text(message)
+    if not normalized or normalized in APPROVAL_ALLOW_PHRASES or normalized in APPROVAL_DENY_PHRASES:
+        return None
+
+    best_record: dict[str, Any] | None = None
+    best_score = 0
+    tokens = [token for token in normalized.split() if len(token) > 2]
+    for record in pending:
+        haystack = _approval_text(record)
+        score = sum(1 for token in tokens if token in haystack)
+        if score > best_score:
+            best_score = score
+            best_record = record
+        elif score == best_score and score > 0:
+            best_record = None
+    return best_record if best_score > 0 else None
+
+
+def _pending_approval_disambiguation(pending: list[dict[str, Any]]) -> str:
+    lines = ["I have multiple approvals waiting. Say 'approve' with the action name, for example:"]
+    for record in pending[:3]:
+        request = record.get("request", {}) if isinstance(record, dict) else {}
+        summary = str(request.get("action_summary") or request.get("tool") or record.get("approval_id", "pending action"))
+        lines.append(f"- approve {summary}")
+    return "\n".join(lines)
+
+
+async def _handle_pending_approval_reply(
+    latest_user_message: str,
+    mcp_url: str,
+) -> tuple[LocalChatResult, str] | None:
+    decision = _approval_decision_from_message(latest_user_message)
+    if decision is None:
+        return None
+
+    pending = list_pending_approvals()
+    if not pending:
+        return LocalChatResult(
+            reply="There is no pending approval waiting right now.",
+            tool_events=[],
+        ), "completed"
+
+    target = _match_pending_approval(latest_user_message, pending)
+    if target is None:
+        if len(pending) == 1:
+            target = pending[0]
+        else:
+            return LocalChatResult(reply=_pending_approval_disambiguation(pending), tool_events=[]), "approval_required"
+
+    approval_id = str(target.get("approval_id", "")).strip()
+    if not approval_id:
+        return LocalChatResult(reply="I could not resolve that approval request.", tool_events=[]), "failed"
+
+    mode = _approval_mode_from_message(latest_user_message)
+    resolved = resolve_pending_approval(approval_id, decision, approval_mode=mode)
+    if resolved is None:
+        return LocalChatResult(reply="That approval request is no longer available.", tool_events=[]), "failed"
+
+    request = resolved.get("request", {}) if isinstance(resolved, dict) else {}
+    summary = str(request.get("action_summary") or request.get("tool") or approval_id)
+    if decision == "denied":
+        return LocalChatResult(
+            reply=f"Understood. I did not run: {summary}",
+            tool_events=[],
+        ), "cancelled"
+
+    resumed = await resume_approved_local_action(approval_id, mcp_url)
+    if mode == "session_limited" and resumed.reply:
+        resumed.reply = f"Session approval recorded for this category.\n\n{resumed.reply}"
+    status = "completed"
+    lowered_reply = resumed.reply.lower()
+    if "not been approved" in lowered_reply or "failed" in lowered_reply:
+        status = "failed"
+    if resumed.approval_requests:
+        status = "approval_required"
+    return resumed, status
 
 
 def _real_browser_opening_hint(latest_user_message: str) -> str | None:
@@ -762,11 +917,30 @@ async def _invoke_rendered_tool(
 
 
 async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalChatResult:
+    history = _sanitize_history(messages)
+    latest_user_message = _latest_user_message(history)
+    approval_response = await _handle_pending_approval_reply(latest_user_message, mcp_url)
+    if approval_response is not None:
+        approval_result, status = approval_response
+        try:
+            await record_conversation_turn(
+                user_message=latest_user_message,
+                assistant_reply=approval_result.reply,
+                tool_events=approval_result.tool_events,
+            )
+            await store_action_trace(
+                goal=latest_user_message,
+                outcome=approval_result.reply,
+                tool_events=approval_result.tool_events,
+                status=status,
+            )
+        except Exception:
+            logger.exception("Failed to persist approval-response trace")
+        return approval_result
+
     if not local_mode_ready():
         raise RuntimeError("; ".join(local_mode_issues()))
 
-    history = _sanitize_history(messages)
-    latest_user_message = _latest_user_message(history)
     openai_messages: list[dict[str, Any]] = [{"role": "system", "content": _browser_system_prompt()}]
     openai_messages.extend(history)
     browser_opening_hint = _real_browser_opening_hint(latest_user_message)
