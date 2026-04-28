@@ -11,6 +11,16 @@ from friday.path_utils import resolve_user_path
 from friday.safety.secrets_filter import is_protected_secret_path
 
 
+RESERVED_WINDOWS_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
 @dataclass(frozen=True)
 class SafePathResult:
     path: Path
@@ -30,10 +40,26 @@ def contains_path_traversal(raw_path: str) -> bool:
     return ".." in parts
 
 
+def contains_reserved_windows_name(raw_path: str) -> bool:
+    parts = Path(raw_path.replace("\\", "/")).parts
+    for part in parts:
+        if not part or part in {"/", "\\"}:
+            continue
+        stem = part.split(".", 1)[0].rstrip(" .").upper()
+        if stem in RESERVED_WINDOWS_NAMES:
+            return True
+    return False
+
+
 def resolve_safe_path(path: str, *, tool_name: str = "read_file", operation: str = "read") -> SafePathResult:
     if contains_path_traversal(path) and not Path(path).expanduser().is_absolute():
         dummy = check_tool_permission(tool_name, {"path": path}, subject=path)
         blocked = PermissionDecision("block", "Relative path traversal is not allowed.", dummy.risk_level, dummy.risk_label, dummy.category, dummy.action, path)
+        return SafePathResult(Path(path), blocked, False, blocked.reason)
+
+    if contains_reserved_windows_name(path):
+        dummy = check_tool_permission(tool_name, {"path": path}, subject=path)
+        blocked = PermissionDecision("block", "Reserved Windows device filenames are not allowed.", dummy.risk_level, dummy.risk_label, dummy.category, dummy.action, path)
         return SafePathResult(Path(path), blocked, False, blocked.reason)
 
     target = resolve_user_path(path)

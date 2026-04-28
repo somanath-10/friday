@@ -8,7 +8,15 @@ from typing import Any
 from friday.core.events import EventLog, EventType
 from friday.core.permissions import permission_for_assessment
 from friday.core.risk import RiskAssessment, classify_desktop_action
-from friday.core.ui import UIElement, UIObservation, find_target_element, is_sensitive_text, normalize_text
+from friday.core.ui import (
+    HIGH_CONFIDENCE_THRESHOLD,
+    MEDIUM_CONFIDENCE_THRESHOLD,
+    UIElement,
+    UIObservation,
+    find_target_element,
+    is_sensitive_text,
+    normalize_text,
+)
 
 
 @dataclass(frozen=True)
@@ -108,34 +116,64 @@ class DesktopOperator:
         lowered = normalize_text(goal)
         if "type" in lowered or "write" in lowered:
             match = self.find_control_by_goal("editable text area", observation, {"preferred_roles": {"edit", "document", "textbox", "textarea"}})
+            confidence = match.confidence if match else 0.0
+            if match and match.element.focused:
+                confidence = max(confidence, 0.85)
+            if not match or confidence < MEDIUM_CONFIDENCE_THRESHOLD:
+                return {
+                    "type": "needs_clarification",
+                    "confidence": confidence,
+                    "reason": "No sufficiently confident editable desktop control was found.",
+                }
             return {
                 "type": "type_text",
-                "element_id": match.element.element_id if match else "",
+                "element_id": match.element.element_id,
                 "text": _extract_desktop_text(goal),
-                "confidence": match.confidence if match else 0.0,
+                "confidence": confidence,
                 "reason": "Type into the best editable control.",
             }
         if "press" in lowered:
             token = _first_press_token(goal)
             match = self.find_control_by_goal(token, observation, {"preferred_roles": {"button"}})
+            confidence = match.confidence if match else 0.0
+            if confidence < MEDIUM_CONFIDENCE_THRESHOLD:
+                return {
+                    "type": "needs_clarification",
+                    "text": token,
+                    "confidence": confidence,
+                    "reason": "No sufficiently confident desktop button was found.",
+                }
             return {
                 "type": "click_control",
-                "element_id": match.element.element_id if match else "",
+                "element_id": match.element.element_id,
                 "text": token,
-                "confidence": match.confidence if match else 0.0,
+                "confidence": confidence,
                 "reason": "Click the best matching control.",
             }
         match = self.find_control_by_goal(goal, observation)
-        if match:
+        if match and match.confidence >= HIGH_CONFIDENCE_THRESHOLD:
             return {
                 "type": "click_control",
                 "element_id": match.element.element_id,
                 "confidence": match.confidence,
                 "reason": "Use highest-confidence desktop control.",
             }
+        if match and match.confidence >= MEDIUM_CONFIDENCE_THRESHOLD:
+            return {
+                "type": "needs_clarification",
+                "element_id": match.element.element_id,
+                "confidence": match.confidence,
+                "reason": "Desktop target is plausible but needs confirmation before clicking.",
+            }
         return {"type": "screenshot_fallback", "reason": "No confident UI Automation control found."}
 
     def permission_for_action(self, action: dict[str, Any]) -> dict[str, Any]:
+        if action.get("type") == "needs_clarification":
+            return {
+                "decision": "block",
+                "reason": action.get("reason", "Clarification is required before desktop action."),
+                "risk_level": 0,
+            }
         action_name = "click" if action.get("type") == "click_control" else str(action.get("type", "inspect"))
         risk = classify_desktop_action(action_name)
         if is_sensitive_text(str(action.get("text", "")), str(action.get("reason", ""))):

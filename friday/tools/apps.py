@@ -15,6 +15,7 @@ from typing import Any
 
 from friday.path_utils import safe_filename, workspace_dir, workspace_path
 from friday.subprocess_utils import run_powershell
+from friday.safety.tool_guard import guard_tool_call
 
 OS = platform.system()  # "Darwin" | "Linux" | "Windows"
 
@@ -966,6 +967,46 @@ exit 3
             return f"Screenshot failed: {result.stderr.strip()}"
         except Exception as e:
             return f"Error taking screenshot: {str(e)}"
+
+    @mcp.tool()
+    def start_screen_recording(max_duration_seconds: int = 60) -> str:
+        """
+        Start explicit local screen recording after approval.
+        FRIDAY must never call this unless the user requested screen recording.
+        """
+        decision, safety_message = guard_tool_call(
+            "start_screen_recording",
+            {"max_duration_seconds": max_duration_seconds},
+            subject="screen",
+        )
+        if safety_message:
+            return safety_message
+        from friday.desktop.recording import start_screen_recording as _start
+
+        result = _start(max_duration_seconds=max_duration_seconds)
+        return result.message
+
+    @mcp.tool()
+    def stop_screen_recording() -> str:
+        """
+        Stop an active explicit local screen recording session.
+        """
+        from friday.desktop.recording import stop_screen_recording as _stop
+
+        return _stop().message
+
+    @mcp.tool()
+    def analyze_screen_recording() -> str:
+        """
+        Return local metadata for the current or last screen recording.
+        Frame analysis is only available when a recording backend has created an artifact.
+        """
+        from friday.desktop.recording import current_recording_state
+
+        state = current_recording_state()
+        if not state or not state.get("artifact_path"):
+            return "No screen recording artifact is available to analyze."
+        return f"Recording metadata: {state}"
 
     @mcp.tool()
     def get_clipboard() -> str:

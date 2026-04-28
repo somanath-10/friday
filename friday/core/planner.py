@@ -10,7 +10,7 @@ request can be solved by a fixed template.
 from __future__ import annotations
 
 import re
-from pathlib import Path
+import os
 
 from friday.core.models import ExecutionPlan, Intent, IntentResult, IntentRoute, Plan, PlanStep
 from friday.core.permissions import check_shell_permission, check_tool_permission
@@ -60,6 +60,8 @@ def _step(
     needs_approval: bool,
     verification_method: str,
     fallback_strategy: str = "",
+    tool_name: str = "",
+    verification_target: str = "",
 ) -> PlanStep:
     return PlanStep(
         id=f"step_{index}",
@@ -71,6 +73,8 @@ def _step(
         risk_level=risk_level,
         needs_approval=needs_approval,
         verification_method=verification_method,
+        tool_name=tool_name,
+        verification_target=verification_target,
         fallback_strategy=fallback_strategy,
     )
 
@@ -168,6 +172,525 @@ def _extract_browser_name(message: str) -> str:
     if "chrome" in lowered:
         return "Chrome"
     return "Browser"
+
+
+def _wants_first_browser_result(message: str) -> bool:
+    lowered = message.lower()
+    first_target = any(
+        phrase in lowered
+        for phrase in (
+            "first video",
+            "first result",
+            "first one",
+            "1st video",
+            "1st result",
+        )
+    )
+    click_target = any(word in lowered for word in ("open", "click", "play", "select"))
+    only_video = ("only click" in lowered or "u only click" in lowered or "you only click" in lowered) and "video" in lowered
+    return (first_target and click_target) or only_video
+
+
+def _extract_site_search_query(message: str, site: str) -> str:
+    text = " ".join(message.strip().split())
+    site_pattern = re.escape(site)
+    patterns = (
+        rf"\b{site_pattern}\s+search\s+(.+?)(?:\s+and\s+(?:open|click|play)\b|$)",
+        rf"\bsearch\s+{site_pattern}\s+for\s+(.+?)(?:\s+and\s+(?:open|click|play)\b|$)",
+        rf"\bsearch(?: for)?\s+(.+?)\s+(?:on|in|from)\s+{site_pattern}\b",
+        r"\bsearch(?: for)?\s+(.+?)(?:\s+and\s+(?:open|click|play)\b|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            query = match.group(1).strip(" .,:;")
+            query = re.sub(rf"\b{site_pattern}\b", " ", query, flags=re.IGNORECASE)
+            query = re.sub(r"\b(?:video|videos|result|results)\b$", "", query, flags=re.IGNORECASE).strip(" .,:;")
+            return re.sub(r"\s+", " ", query)
+    return ""
+
+
+def _is_youtube_search_and_open_first(message: str) -> bool:
+    lowered = message.lower()
+    return "youtube" in lowered and "search" in lowered and _wants_first_browser_result(message)
+
+
+def _is_browser_click_first_request(message: str) -> bool:
+    lowered = message.lower()
+    if not _wants_first_browser_result(message):
+        return False
+    return any(
+        marker in lowered
+        for marker in (
+            "current",
+            "this page",
+            "the page",
+            "search results page",
+            "in it",
+            "on it",
+            "from it",
+            "first result",
+            "first video",
+            "first one",
+        )
+    )
+
+
+def _is_react_project_request(message: str) -> bool:
+    lowered = message.lower()
+    return "react" in lowered and "project" in lowered and any(
+        marker in lowered for marker in ("initialize", "initialise", "create", "make", "setup", "set up")
+    )
+
+
+def _is_calculator_page_request(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in ("calculator webpage", "calculator web page", "calculator page")) and any(
+        marker in lowered for marker in ("make", "create", "add", "build")
+    )
+
+
+def _extract_project_name(message: str) -> str:
+    quoted = _extract_quoted_text(message)
+    if quoted and "/" not in quoted and "\\" not in quoted:
+        return re.sub(r"[^a-zA-Z0-9_.-]+", "-", quoted).strip("-")
+    patterns = (
+        r"\b(?:named|called|name(?:d)?\s+is|in\s+the\s+name)\s+([a-zA-Z0-9_.-]+)",
+        r"\bproject\s+([a-zA-Z0-9_.-]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip(" .,:;")
+            if candidate.lower() not in {"in", "at", "on", "with"}:
+                return candidate
+    return ""
+
+
+def _extract_project_location(message: str) -> str:
+    lowered = message.lower()
+    for markers, path in SPECIAL_PATH_HINTS:
+        if any(marker in lowered for marker in markers):
+            return path
+    match = re.search(r"\bin\s+([a-zA-Z]:[\\/][^,]+|[~/]?[a-zA-Z0-9_.\\/ -]+?)\s+(?:named|called|in the name|with|and|$)", message, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip(" .,:;")
+    return ""
+
+
+def _extract_project_path(message: str) -> str:
+    match = re.search(r"\b(?:project\s+)?at\s+(.+)$", message, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip(" .,:;\"'")
+    match = re.search(r"\bin\s+the\s+project\s+(.+)$", message, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip(" .,:;\"'")
+    return ""
+
+
+def _shell_cd_command(directory: str, command: str) -> str:
+    if os.name == "nt":
+        return f'cd /d "{directory}" && {command}'
+    return f'cd "{directory}" && {command}'
+
+
+def _react_app_jsx() -> str:
+    return """import { useMemo, useState } from "react";
+import "./App.css";
+
+const buttons = [
+  "7", "8", "9", "/",
+  "4", "5", "6", "*",
+  "1", "2", "3", "-",
+  "0", ".", "=", "+",
+];
+
+function App() {
+  const [display, setDisplay] = useState("0");
+  const [expression, setExpression] = useState("");
+
+  const preview = useMemo(() => expression || display, [display, expression]);
+
+  function appendValue(value) {
+    if (value === "=") {
+      try {
+        const normalized = expression || display;
+        if (!/^[0-9+\\-*/. ()]+$/.test(normalized)) {
+          throw new Error("Invalid expression");
+        }
+        const result = Function(`"use strict"; return (${normalized})`)();
+        setDisplay(String(Number.isFinite(result) ? result : "Error"));
+        setExpression("");
+      } catch {
+        setDisplay("Error");
+        setExpression("");
+      }
+      return;
+    }
+
+    setExpression((current) => {
+      const next = current === "" && display !== "0" ? display + value : current + value;
+      setDisplay(next);
+      return next;
+    });
+  }
+
+  function clearAll() {
+    setDisplay("0");
+    setExpression("");
+  }
+
+  function backspace() {
+    setExpression((current) => {
+      const next = current.slice(0, -1);
+      setDisplay(next || "0");
+      return next;
+    });
+  }
+
+  return (
+    <main className="calculator-shell">
+      <section className="calculator" aria-label="Calculator">
+        <div className="display">
+          <span className="expression">{preview}</span>
+          <strong>{display}</strong>
+        </div>
+        <div className="utility-row">
+          <button type="button" onClick={clearAll}>AC</button>
+          <button type="button" onClick={backspace}>DEL</button>
+        </div>
+        <div className="keypad">
+          {buttons.map((button) => (
+            <button
+              type="button"
+              key={button}
+              className={/[+\\-*/=]/.test(button) ? "operator" : ""}
+              onClick={() => appendValue(button)}
+            >
+              {button}
+            </button>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+export default App;
+"""
+
+
+def _react_app_css() -> str:
+    return """#root {
+  min-height: 100vh;
+}
+
+.calculator-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #101820, #23395d 48%, #0f766e);
+  color: #f8fafc;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.calculator {
+  width: min(92vw, 360px);
+  padding: 24px;
+  border-radius: 8px;
+  background: #111827;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+}
+
+.display {
+  min-height: 112px;
+  display: grid;
+  align-content: end;
+  gap: 8px;
+  padding: 18px;
+  border-radius: 6px;
+  background: #020617;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.expression {
+  min-height: 20px;
+  color: #94a3b8;
+  font-size: 0.95rem;
+}
+
+.display strong {
+  font-size: 2.4rem;
+  line-height: 1.1;
+}
+
+.utility-row,
+.keypad {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.utility-row {
+  grid-template-columns: 1fr 1fr;
+}
+
+.keypad {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+button {
+  min-height: 54px;
+  border: 0;
+  border-radius: 6px;
+  background: #334155;
+  color: #f8fafc;
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #475569;
+}
+
+button.operator,
+.utility-row button {
+  background: #14b8a6;
+  color: #042f2e;
+}
+"""
+
+
+def _react_project_plan(message: str) -> list[PlanStep]:
+    project_name = _extract_project_name(message)
+    location = _extract_project_location(message)
+    if not project_name or not location:
+        return []
+
+    from friday.path_utils import resolve_user_path
+
+    normalized_location = location.rstrip("/\\")
+    project_relative = f"{normalized_location}/{project_name}"
+    project_path = resolve_user_path(project_relative)
+    location_path = resolve_user_path(location)
+    if project_path.exists():
+        assessment = classify_file_operation("overwrite", str(project_path), overwrite=True)
+        return [
+            _step(
+                1,
+                description=f"Ask before reusing or overwriting the existing React project folder at {project_relative}.",
+                executor="files",
+                action_type="confirm_existing_project",
+                parameters={"path": project_relative, "project_name": project_name, "location": location},
+                expected_result="The user chooses whether to reuse, overwrite, or pick a different project name.",
+                risk_level=assessment.level,
+                needs_approval=True,
+                verification_method="user_decision_required",
+                tool_name="run_shell_command",
+                verification_target=str(project_path),
+            )
+        ]
+
+    create_command = _shell_cd_command(str(location_path), f"npm create vite@latest {project_name} -- --template react")
+    install_command = _shell_cd_command(str(project_path), "npm install")
+    build_command = _shell_cd_command(str(project_path), "npm run build")
+    verify_script = (
+        "const fs=require('fs');"
+        "for (const f of ['package.json','src/App.jsx']) { if (!fs.existsSync(f)) throw new Error(f+' missing'); }"
+        "const app=fs.readFileSync('src/App.jsx','utf8');"
+        "if (!/calculator|useState|keypad/i.test(app)) throw new Error('calculator UI missing');"
+        "console.log('React calculator project verified');"
+    )
+    verify_command = _shell_cd_command(str(project_path), f'node -e "{verify_script}"')
+
+    create_decision = check_shell_permission(create_command)
+    install_decision = check_shell_permission(install_command)
+    build_decision = check_shell_permission(build_command)
+    verify_decision = check_shell_permission(verify_command)
+    file_assessment = classify_file_operation("write_new")
+
+    return [
+        _step(
+            1,
+            description=f"Check that the target React project path is available: {project_relative}.",
+            executor="files",
+            action_type="check_project_path",
+            parameters={"path": project_relative, "limit": 20},
+            expected_result="The target folder does not already exist.",
+            risk_level=RiskLevel.READ_ONLY,
+            needs_approval=False,
+            verification_method="path_available",
+            tool_name="list_directory_tree",
+            verification_target=str(project_path),
+        ),
+        _step(
+            2,
+            description="Create the Vite React project in the requested Documents folder.",
+            executor="code",
+            action_type="shell_command",
+            parameters={"command": create_command},
+            expected_result="Vite creates a new React project folder.",
+            risk_level=create_decision.risk_level,
+            needs_approval=create_decision.needs_approval,
+            verification_method="command_output_ok",
+            tool_name="run_shell_command",
+        ),
+        _step(
+            3,
+            description="Install React project dependencies.",
+            executor="code",
+            action_type="shell_command",
+            parameters={"command": install_command},
+            expected_result="npm installs dependencies for the generated React project.",
+            risk_level=install_decision.risk_level,
+            needs_approval=install_decision.needs_approval,
+            verification_method="command_output_ok",
+            tool_name="run_shell_command",
+        ),
+        _step(
+            4,
+            description="Replace the generated App component with a calculator UI.",
+            executor="files",
+            action_type="write_file",
+            parameters={"path": f"{project_relative}/src/App.jsx", "content": _react_app_jsx()},
+            expected_result="src/App.jsx contains the calculator React component.",
+            risk_level=file_assessment.level,
+            needs_approval=False,
+            verification_method="file_exists",
+            tool_name="write_file",
+            verification_target=str(project_path / "src" / "App.jsx"),
+        ),
+        _step(
+            5,
+            description="Replace the generated app styles with calculator styling.",
+            executor="files",
+            action_type="write_file",
+            parameters={"path": f"{project_relative}/src/App.css", "content": _react_app_css()},
+            expected_result="src/App.css contains calculator styling.",
+            risk_level=file_assessment.level,
+            needs_approval=False,
+            verification_method="file_exists",
+            tool_name="write_file",
+            verification_target=str(project_path / "src" / "App.css"),
+        ),
+        _step(
+            6,
+            description="Run the production build to verify the React calculator compiles.",
+            executor="code",
+            action_type="shell_command",
+            parameters={"command": build_command},
+            expected_result="npm run build exits successfully.",
+            risk_level=build_decision.risk_level,
+            needs_approval=build_decision.needs_approval,
+            verification_method="command_output_ok",
+            tool_name="run_shell_command",
+        ),
+        _step(
+            7,
+            description="Verify package.json, src/App.jsx, calculator UI code, and build evidence.",
+            executor="code",
+            action_type="verify_react_project",
+            parameters={"command": verify_command, "project_path": project_relative},
+            expected_result="Project files exist and the calculator UI code is present.",
+            risk_level=verify_decision.risk_level,
+            needs_approval=verify_decision.needs_approval,
+            verification_method="react_project_verified",
+            tool_name="run_shell_command",
+            verification_target=str(project_path),
+        ),
+    ]
+
+
+def _calculator_page_plan(message: str) -> list[PlanStep]:
+    project_path = _extract_project_path(message)
+    if not project_path:
+        return []
+
+    from friday.path_utils import resolve_user_path
+
+    resolved_project = resolve_user_path(project_path)
+    build_command = _shell_cd_command(str(resolved_project), "npm run build")
+    verify_script = (
+        "const fs=require('fs');"
+        "for (const f of ['package.json','src/App.jsx']) { if (!fs.existsSync(f)) throw new Error(f+' missing'); }"
+        "const app=fs.readFileSync('src/App.jsx','utf8');"
+        "if (!/calculator|useState|keypad/i.test(app)) throw new Error('calculator UI missing');"
+        "console.log('Calculator page verified');"
+    )
+    verify_command = _shell_cd_command(str(resolved_project), f'node -e "{verify_script}"')
+    build_decision = check_shell_permission(build_command)
+    verify_decision = check_shell_permission(verify_command)
+    write_assessment = classify_file_operation("edit")
+    project_root_text = project_path.rstrip("/\\")
+
+    return [
+        _step(
+            1,
+            description="Inspect the target project folder before changing app files.",
+            executor="files",
+            action_type="list_tree",
+            parameters={"path": project_path, "limit": 80},
+            expected_result="Project files are visible before edits are planned.",
+            risk_level=RiskLevel.READ_ONLY,
+            needs_approval=False,
+            verification_method="output_nonempty",
+            tool_name="list_directory_tree",
+            verification_target=str(resolved_project),
+        ),
+        _step(
+            2,
+            description="Write the calculator React component into src/App.jsx.",
+            executor="files",
+            action_type="write_file",
+            parameters={"path": f"{project_root_text}/src/App.jsx", "content": _react_app_jsx()},
+            expected_result="src/App.jsx contains calculator UI code.",
+            risk_level=write_assessment.level,
+            needs_approval=write_assessment.level >= RiskLevel.SENSITIVE_ACTION,
+            verification_method="file_exists",
+            tool_name="write_file",
+            verification_target=str(resolved_project / "src" / "App.jsx"),
+        ),
+        _step(
+            3,
+            description="Write calculator styles into src/App.css.",
+            executor="files",
+            action_type="write_file",
+            parameters={"path": f"{project_root_text}/src/App.css", "content": _react_app_css()},
+            expected_result="src/App.css contains calculator styling.",
+            risk_level=write_assessment.level,
+            needs_approval=write_assessment.level >= RiskLevel.SENSITIVE_ACTION,
+            verification_method="file_exists",
+            tool_name="write_file",
+            verification_target=str(resolved_project / "src" / "App.css"),
+        ),
+        _step(
+            4,
+            description="Run the project build after editing calculator files.",
+            executor="code",
+            action_type="shell_command",
+            parameters={"command": build_command},
+            expected_result="The build exits successfully.",
+            risk_level=build_decision.risk_level,
+            needs_approval=build_decision.needs_approval,
+            verification_method="command_output_ok",
+            tool_name="run_shell_command",
+        ),
+        _step(
+            5,
+            description="Verify the calculator page files and UI markers exist.",
+            executor="code",
+            action_type="verify_react_project",
+            parameters={"command": verify_command, "project_path": project_path},
+            expected_result="Calculator page code is present and verifiable.",
+            risk_level=verify_decision.risk_level,
+            needs_approval=verify_decision.needs_approval,
+            verification_method="react_project_verified",
+            tool_name="run_shell_command",
+            verification_target=str(resolved_project),
+        ),
+    ]
 
 
 def _file_plan(message: str, intent: IntentResult) -> list[PlanStep]:
@@ -273,7 +796,48 @@ def _file_plan(message: str, intent: IntentResult) -> list[PlanStep]:
 
 def _shell_or_code_plan(message: str, intent: IntentResult) -> list[PlanStep]:
     lowered = message.lower()
-    if lowered.startswith("open ") and any(term in lowered for term in ("powershell", "cmd", "command prompt", "terminal")):
+    if _is_react_project_request(message):
+        return _react_project_plan(message)
+    if _is_calculator_page_request(message):
+        return _calculator_page_plan(message)
+    project_path = _extract_project_path(message)
+    if project_path and "build" in lowered:
+        from friday.path_utils import resolve_user_path
+
+        command = _shell_cd_command(str(resolve_user_path(project_path)), "npm run build")
+        decision = check_shell_permission(command)
+        return [
+            _step(
+                1,
+                description="Run the project build in the referenced project folder.",
+                executor="code",
+                action_type="shell_command",
+                parameters={"command": command},
+                expected_result="The build command exits successfully.",
+                risk_level=decision.risk_level,
+                needs_approval=decision.needs_approval,
+                verification_method="command_output_ok",
+            )
+        ]
+    if project_path and "run" in lowered:
+        from friday.path_utils import resolve_user_path
+
+        command = _shell_cd_command(str(resolve_user_path(project_path)), "npm run dev")
+        decision = check_shell_permission(command)
+        return [
+            _step(
+                1,
+                description="Start the project development command in the referenced project folder.",
+                executor="code",
+                action_type="shell_command",
+                parameters={"command": command},
+                expected_result="The project run command starts or reports captured output.",
+                risk_level=decision.risk_level,
+                needs_approval=decision.needs_approval,
+                verification_method="command_output_ok",
+            )
+        ]
+    if lowered.startswith("open ") and any(term in lowered for term in ("powershell", "cmd", "command prompt", "terminal")) and not any(term in lowered for term in ("initialize", "initialise", "create", "setup", "set up")):
         return _desktop_plan(message)
     if "push" in lowered:
         command = "git push"
@@ -389,10 +953,190 @@ def _desktop_plan(message: str) -> list[PlanStep]:
     return steps
 
 
+def _screenshot_plan(message: str) -> list[PlanStep]:
+    lowered = message.lower()
+    wants_analysis = any(marker in lowered for marker in ("analyze", "analyse", "what is", "read", "debug", "error", "popup"))
+    assessment = classify_desktop_action("inspect_screen" if wants_analysis else "screenshot")
+    return [
+        _step(
+            1,
+            description="Capture the current screen to a workspace screenshot artifact.",
+            executor="desktop",
+            action_type="inspect_screen" if wants_analysis else "screenshot",
+            parameters={"question": message, "filename": ""},
+            expected_result="A screenshot artifact is saved and any available OCR/vision analysis is returned.",
+            risk_level=assessment.level,
+            needs_approval=False,
+            verification_method="artifact_or_output",
+            tool_name="inspect_desktop_screen" if wants_analysis else "take_screenshot",
+            fallback_strategy="Use OCR/vision when available; otherwise return the screenshot artifact path and setup message.",
+        )
+    ]
+
+
+def _screen_recording_plan(message: str) -> list[PlanStep]:
+    lowered = message.lower()
+    if any(marker in lowered for marker in ("stop screen recording", "save the recording", "stop recording")):
+        assessment = classify_desktop_action("stop_screen_recording")
+        return [
+            _step(
+                1,
+                description="Stop the active explicit screen recording session.",
+                executor="screen_recording",
+                action_type="stop_screen_recording",
+                parameters={},
+                expected_result="The active recording is stopped and the local artifact path is reported.",
+                risk_level=assessment.level,
+                needs_approval=False,
+                verification_method="screen_recording_stopped",
+                tool_name="stop_screen_recording",
+            )
+        ]
+
+    if any(marker in lowered for marker in ("analyze the recording", "analyse the recording")):
+        assessment = classify_desktop_action("stop_screen_recording")
+        return [
+            _step(
+                1,
+                description="Inspect the saved screen recording artifact metadata for local analysis.",
+                executor="screen_recording",
+                action_type="analyze_screen_recording",
+                parameters={},
+                expected_result="Recording metadata or a clear setup message is returned.",
+                risk_level=assessment.level,
+                needs_approval=False,
+                verification_method="output_nonempty",
+                tool_name="analyze_screen_recording",
+            )
+        ]
+
+    assessment = classify_desktop_action("start_screen_recording")
+    return [
+        _step(
+            1,
+            description="Request explicit approval before starting local screen recording.",
+            executor="screen_recording",
+            action_type="start_screen_recording",
+            parameters={"max_duration_seconds": 60},
+            expected_result="Screen recording starts only after explicit approval and records locally.",
+            risk_level=assessment.level,
+            needs_approval=True,
+            verification_method="screen_recording_started",
+            tool_name="start_screen_recording",
+            fallback_strategy="If recording dependencies are missing, report setup instructions without recording.",
+        )
+    ]
+
+
 def _browser_or_research_plan(message: str, intent: IntentResult) -> list[PlanStep]:
     lowered = message.lower()
     executor = "research" if intent.intent == Intent.RESEARCH else "browser"
     steps: list[PlanStep] = []
+
+    current_page_request = any(marker in lowered for marker in ("current", "this page", "the page", "in it", "on it", "from it"))
+    if _is_youtube_search_and_open_first(message) and not current_page_request:
+        query = _extract_site_search_query(message, "youtube")
+        open_assessment = classify_browser_action("navigate")
+        click_assessment = classify_browser_action("click")
+        return [
+            _step(
+                1,
+                description="Open YouTube in the browser.",
+                executor="browser",
+                action_type="open_url",
+                parameters={"url": "https://www.youtube.com"},
+                expected_result="YouTube opens in the visible browser.",
+                risk_level=open_assessment.level,
+                needs_approval=False,
+                verification_method="browser_result_opened",
+                tool_name="open_url",
+                verification_target="https://www.youtube.com",
+            ),
+            _step(
+                2,
+                description=f"Search YouTube for {query}.",
+                executor="browser",
+                action_type="dynamic_search",
+                parameters={"goal": f"search for {query} on YouTube", "max_steps": 4},
+                expected_result="YouTube search results are displayed for the query.",
+                risk_level=open_assessment.level,
+                needs_approval=False,
+                verification_method="dynamic_goal_progress",
+                tool_name="browser_dynamic_loop",
+                verification_target=query,
+            ),
+            _step(
+                3,
+                description="Click the first visible video result using browser observation.",
+                executor="browser",
+                action_type="click_first_result",
+                parameters={"goal": f"On the current YouTube search results page for '{query}', click the first video result.", "max_steps": 4},
+                expected_result="The first YouTube video result is clicked.",
+                risk_level=click_assessment.level,
+                needs_approval=False,
+                verification_method="browser_result_opened",
+                tool_name="browser_dynamic_loop",
+                verification_target="first video",
+            ),
+            _step(
+                4,
+                description="Verify that a YouTube video page or player is open.",
+                executor="browser",
+                action_type="verify_video_opened",
+                parameters={"limit": 30},
+                expected_result="The browser URL, title, or page state shows the selected video is open.",
+                risk_level=open_assessment.level,
+                needs_approval=False,
+                verification_method="browser_video_opened",
+                tool_name="browser_get_state",
+                verification_target="youtube video",
+            ),
+        ]
+
+    if _is_browser_click_first_request(message):
+        click_assessment = classify_browser_action("click")
+        target = "video" if "video" in lowered or "youtube" in lowered else "result"
+        return [
+            _step(
+                1,
+                description="Observe the current browser page before choosing a clickable result.",
+                executor="browser",
+                action_type="browser_get_state",
+                parameters={"limit": 30},
+                expected_result="Visible browser links, buttons, and cards are available for selection.",
+                risk_level=RiskLevel.READ_ONLY,
+                needs_approval=False,
+                verification_method="output_nonempty",
+                tool_name="browser_get_state",
+            ),
+            _step(
+                2,
+                description=f"Click the first visible {target} result using the browser element map.",
+                executor="browser",
+                action_type="click_first_result",
+                parameters={"goal": message, "max_steps": 4},
+                expected_result=f"The first relevant {target} result is opened.",
+                risk_level=click_assessment.level,
+                needs_approval=False,
+                verification_method="browser_result_opened",
+                tool_name="browser_dynamic_loop",
+                verification_target=f"first {target}",
+            ),
+            _step(
+                3,
+                description="Verify that the browser moved to the selected result page.",
+                executor="browser",
+                action_type="verify_video_opened" if target == "video" else "verify_result_opened",
+                parameters={"limit": 30},
+                expected_result="The browser URL, title, or visible page state changed after the click.",
+                risk_level=RiskLevel.READ_ONLY,
+                needs_approval=False,
+                verification_method="browser_video_opened" if target == "video" else "browser_result_opened",
+                tool_name="browser_get_state",
+                verification_target=f"opened {target}",
+            ),
+        ]
+
     mentions_browser_app = any(name in lowered for name in ("chrome", "edge"))
     browser_task_markers = ("search", "go to", "visit", "website", "url", "login", "bank", "http://", "https://", "latest", "news", "page")
     if mentions_browser_app:
@@ -461,6 +1205,10 @@ def create_plan(user_message: str, intent_result: IntentResult | None = None) ->
         steps = _shell_or_code_plan(user_message, intent)
     elif intent.intent == Intent.DESKTOP:
         steps = _desktop_plan(user_message)
+    elif intent.intent == Intent.SCREENSHOT:
+        steps = _screenshot_plan(user_message)
+    elif intent.intent == Intent.SCREEN_RECORDING:
+        steps = _screen_recording_plan(user_message)
     elif intent.intent in {Intent.BROWSER, Intent.RESEARCH}:
         steps = _browser_or_research_plan(user_message, intent)
     elif intent.intent == Intent.MIXED:
@@ -498,6 +1246,17 @@ def _should_use_legacy_for_complex_task(lowered: str, route: IntentRoute) -> boo
 def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan:
     """Compatibility planning surface for the structured command tests and local chat bridge."""
     lowered = user_message.strip().lower()
+    if lowered.startswith("needs_clarification:"):
+        return ExecutionPlan(
+            goal=user_message,
+            intent=route.intent,
+            confidence=route.confidence,
+            required_capabilities=list(route.required_capabilities),
+            suggested_executor=route.suggested_executor,
+            steps=[],
+            supported=True,
+            notes=[user_message],
+        )
     if _should_use_legacy_for_complex_task(lowered, route):
         return ExecutionPlan(
             goal=user_message,
@@ -521,6 +1280,11 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
         suggested_executor=route.suggested_executor,
     )
     plan = create_plan(user_message, intent_result)
+    notes: list[str] = []
+    if _is_react_project_request(user_message) and not plan.steps:
+        notes.append("needs_clarification: React project name and location are required before initialization.")
+    if _is_calculator_page_request(user_message) and not plan.steps:
+        notes.append("needs_clarification: A target project folder is required before editing calculator files.")
     converted_steps: list[PlanStep] = []
     for step in plan.steps:
         tool_name = step.tool_name
@@ -535,8 +1299,21 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
                 "copy_path": "copy_path",
                 "move_path": "move_path",
                 "shell_command": "run_shell_command",
+                "inspect_screen": "inspect_desktop_screen",
+                "screenshot": "take_screenshot",
                 "dynamic_desktop_task": "desktop_dynamic_loop",
                 "dynamic_browser_task": "browser_dynamic_loop",
+                "dynamic_search": "browser_dynamic_loop",
+                "click_first_result": "browser_dynamic_loop",
+                "browser_get_state": "browser_get_state",
+                "verify_video_opened": "browser_get_state",
+                "verify_result_opened": "browser_get_state",
+                "open_url": "open_url",
+                "start_screen_recording": "start_screen_recording",
+                "stop_screen_recording": "stop_screen_recording",
+                "analyze_screen_recording": "analyze_screen_recording",
+                "check_project_path": "list_directory_tree",
+                "verify_react_project": "run_shell_command",
                 "browser_observe": "search_web",
                 "browser_submit_form": "browser_submit_form",
                 "status": "get_host_control_status",
@@ -546,7 +1323,7 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
         if step.action_type == "write_file":
             path_value = str(parameters.get("path") or ("report.md" if "report" in lowered else "generated_by_friday.txt"))
             parameters = {
-                "file_path": Path(path_value).name if not path_value.startswith("workspace/") else path_value,
+                "file_path": path_value,
                 "content": parameters.get("content", ""),
             }
         verification_target = ""
@@ -558,8 +1335,14 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
             verification_target = str(parameters.get("app_name", ""))
         elif step.action_type in {"delete_path", "list_tree", "open_path"}:
             verification_target = str(parameters.get("path", ""))
-        elif step.action_type in {"dynamic_browser_task", "dynamic_desktop_task"}:
+        elif step.action_type in {"dynamic_browser_task", "dynamic_desktop_task", "dynamic_search", "click_first_result"}:
             verification_target = str(parameters.get("goal", user_message))
+        elif step.action_type in {"check_project_path", "verify_react_project", "confirm_existing_project"}:
+            verification_target = step.verification_target or str(parameters.get("project_path") or parameters.get("path") or "")
+        elif step.action_type in {"open_url", "verify_video_opened", "verify_result_opened"}:
+            verification_target = step.verification_target or str(parameters.get("url", ""))
+        elif step.action_type in {"screenshot", "inspect_screen", "start_screen_recording", "stop_screen_recording", "analyze_screen_recording"}:
+            verification_target = step.verification_target or step.action_type
 
         verification_method = step.verification_method
         if step.action_type == "shell_command":
@@ -589,4 +1372,5 @@ def build_execution_plan(user_message: str, route: IntentRoute) -> ExecutionPlan
         required_capabilities=list(route.required_capabilities),
         suggested_executor=route.suggested_executor,
         steps=converted_steps,
+        notes=notes,
     )
