@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "id": "friday-local-assistant",
+  "name": "FRIDAY",
+  "description": "Local-first personal assistant with MCP tools for browser, desktop, files, shell, research, memory, and workflows.",
+  "runtime": {
+    "language": "python",
+    "python": ">=3.11",
+    "entrypoints": {
+      "server": "server:main",
+      "voice": "agent_friday:dev",
+      "healthcheck": "friday.healthcheck:main"
+    }
+  },
+  "controlPlane": {
+    "kind": "FastMCP SSE server",
+    "defaultHost": "127.0.0.1",
+    "defaultPort": 8000,
+    "statusEndpoint": "/status",
+    "uiEndpoint": "/",
+    "sseEndpoint": "/sse"
+  },
+  "capabilities": [
+    {
+      "id": "browser",
+      "name": "Browser Automation",
+      "roots": ["friday/browser", "friday/tools/browser.py"],
+      "risk": "medium"
+    },
+    {
+      "id": "desktop",
+      "name": "Desktop Control",
+      "roots": ["friday/desktop", "friday/tools/operator.py", "friday/tools/apps.py"],
+      "risk": "high"
+    },
+    {
+      "id": "filesystem",
+      "name": "File Operations",
+      "roots": ["friday/files", "friday/tools/files.py", "friday/tools/utils.py"],
+      "risk": "high"
+    },
+    {
+      "id": "shell",
+      "name": "Shell Execution",
+      "roots": ["friday/shell", "friday/tools/shell.py", "friday/code"],
+      "risk": "high"
+    },
+    {
+      "id": "memory",
+      "name": "Local Memory",
+      "roots": ["friday/memory", "friday/tools/memory.py", "friday/tools/context_manager.py"],
+      "risk": "medium"
+    },
+    {
+      "id": "workflow",
+      "name": "Workflow Orchestration",
+      "roots": ["friday/workflows", "friday/tools/workflow_orchestrator.py"],
+      "risk": "medium"
+    },
+    {
+      "id": "research",
+      "name": "Research and Reports",
+      "roots": ["friday/research", "friday/tools/research.py", "friday/tools/web.py"],
+      "risk": "medium"
+    },
+    {
+      "id": "voice",
+      "name": "Voice Pipeline",
+      "roots": ["friday/voice", "agent_friday.py"],
+      "risk": "medium"
+    }
+  ],
+  "extensionModel": {
+    "toolRoot": "friday/tools",
+    "toolContract": "Each tool module may define register(mcp). Modules are discovered in sorted order at startup.",
+    "docs": "docs/PLUGIN_SYSTEM.md"
+  },
+  "securityModel": {
+    "trustBoundary": "single-user local assistant",
+    "permissionConfig": "config/permissions.yaml",
+    "approvalLayer": "friday/safety/approval_gate.py",
+    "auditLog": "friday/safety/audit_log.py",
+    "emergencyStop": "friday/safety/emergency_stop.py",
+    "docs": "docs/SECURITY.md"
+  },
+  "docs": {
+    "architecture": "docs/ARCHITECTURE.md",
+    "tools": "docs/TOOLS.md",
+    "workflows": "docs/WORKFLOWS.md",
+    "security": "docs/SECURITY.md",
+    "plugins": "docs/PLUGIN_SYSTEM.md"
+  },
+  "qualityGates": [
+    "uv run python -m compileall friday tests",
+    "uv run pytest tests -q",
+    "uv run friday_healthcheck"
+  ]
+}

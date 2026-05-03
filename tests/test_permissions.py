@@ -33,6 +33,16 @@ def test_append_and_create_folder_are_safe_file_writes():
     assert folder_decision.risk_level == RiskLevel.SAFE_WRITE
 
 
+def test_absolute_current_workspace_path_is_allowed(monkeypatch, tmp_path):
+    monkeypatch.setenv("FRIDAY_WORKSPACE_DIR", str(tmp_path))
+    target = tmp_path / "generated_by_friday.txt"
+
+    decision = check_tool_permission("create_document", {"path": str(target)})
+
+    assert decision.decision == "allow"
+    assert decision.risk_level == RiskLevel.SAFE_WRITE
+
+
 def test_permissions_config_loading(tmp_path):
     config_path = tmp_path / "permissions.yaml"
     config_path.write_text(

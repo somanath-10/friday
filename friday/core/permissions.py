@@ -306,13 +306,14 @@ def _protected_path_reason(path_text: str, config: dict[str, Any]) -> str:
 def _filesystem_allowed(path_text: str, config: dict[str, Any]) -> bool:
     if not path_text:
         return True
+    roots = config.get("filesystem", {}).get("allowed_roots", [])
+    expanded_roots = [_expand_path(str(root)) for root in roots]
+    expanded_roots.append(workspace_dir())
+
     if _looks_like_windows_absolute(path_text):
         normalized_target = _normalize_windows_path_text(path_text)
-        for root in config.get("filesystem", {}).get("allowed_roots", []):
-            raw_root = str(root)
-            if not _looks_like_windows_absolute(raw_root) and "%" not in raw_root:
-                continue
-            normalized_root = _normalize_windows_path_text(raw_root)
+        for root in expanded_roots:
+            normalized_root = _normalize_windows_path_text(str(root))
             if normalized_target == normalized_root or normalized_target.startswith(normalized_root + "/"):
                 return True
         return False
@@ -321,9 +322,6 @@ def _filesystem_allowed(path_text: str, config: dict[str, Any]) -> bool:
     except Exception:
         target = _expand_path(path_text)
 
-    roots = config.get("filesystem", {}).get("allowed_roots", [])
-    expanded_roots = [_expand_path(str(root)) for root in roots]
-    expanded_roots.append(workspace_dir())
     return any(_is_relative_to(target, root) for root in expanded_roots)
 
 

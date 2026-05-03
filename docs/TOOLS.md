@@ -124,6 +124,17 @@ All tools are automatically discovered from `friday/tools/`. To add a new tool, 
 
 ---
 
+## Project Manifest (`project_manifest.py`)
+
+| Tool | Description |
+|------|-------------|
+| `get_project_manifest` | Return the full `friday.project.json` metadata contract |
+| `get_project_capabilities` | Return the declared capability table with roots and risk levels |
+| `get_architecture_snapshot` | Return a compact runtime, security, extension, and validation snapshot |
+| `get_tool_manifest` | Return loaded tool modules grouped by capability, risk, and approval posture |
+
+---
+
 ## 🏥 Diagnostics (`diagnostics.py`) *(New in Phase 3)*
 
 | Tool | Description |

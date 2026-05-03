@@ -47,6 +47,13 @@ def test_build_runtime_status_reports_missing_openai_key(monkeypatch, mock_works
     assert "OPENAI_API_KEY is required for local browser chat" in status["setup_issues"][0]
 
 
+def test_config_exposes_legacy_server_aliases():
+    assert friday_config.config.SERVER_HOST == friday_config.config.MCP_SERVER_HOST
+    assert friday_config.config.SERVER_PORT == friday_config.config.MCP_SERVER_PORT
+    assert friday_config.config.SERVER_MOUNT_PATH == friday_config.config.MCP_MOUNT_PATH
+    assert friday_config.config.SERVER_SSE_PATH == friday_config.config.MCP_SSE_PATH
+
+
 def test_build_runtime_status_falls_back_from_invalid_port(monkeypatch, mock_workspace):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("MCP_SERVER_PORT", "not-a-port")

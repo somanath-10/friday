@@ -349,6 +349,11 @@ class Config:
     MCP_SERVER_PORT: int = env_int("MCP_SERVER_PORT", 8000)
     MCP_MOUNT_PATH: str = _env_text("MCP_MOUNT_PATH", "/") or "/"
     MCP_SSE_PATH: str = _env_text("MCP_SSE_PATH", "/sse") or "/sse"
+    # Backward-compatible aliases for older installed entrypoints.
+    SERVER_HOST: str = MCP_SERVER_HOST
+    SERVER_PORT: int = MCP_SERVER_PORT
+    SERVER_MOUNT_PATH: str = MCP_MOUNT_PATH
+    SERVER_SSE_PATH: str = MCP_SSE_PATH
     SERVER_INSTRUCTIONS: str = os.getenv(
         "SERVER_INSTRUCTIONS",
         "I am F.R.I.D.A.Y., a Tony Stark-style AI assistant. "

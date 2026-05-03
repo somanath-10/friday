@@ -235,6 +235,8 @@ TTS_PROVIDER=sarvam     # sarvam | openai
 | **Permissions Diagnostics** | `run_permission_diagnostics` tool tests Screen Recording and Accessibility on macOS and returns exact fix commands. |
 | **Context Manager** | 5 new tools (`get_context_stats`, `trim_context`, `get_session_summary`, `save_session_note`, `clear_session_context`) for managing conversation history. |
 | **Workflow Orchestrator** | Goal-level tools create preflighted plans, track progress, verify results, and preserve recovery context. |
+| **Project Manifest** | `friday.project.json` declares runtime entrypoints, capabilities, docs, security boundaries, and quality gates in one machine-readable file. |
+| **Tool Capability Manifest** | Loaded tool modules are grouped by capability, risk, and approval posture through `/status` and `get_tool_manifest`, mirroring OpenClaw's metadata-first plugin style. |
 | **Optional Tool Gating** | Tool modules can be disabled by env so platform-specific or non-core integrations do not weaken the main Windows/macOS desktop flow. |
 | **Testing Suite** | `pytest` + `pytest-mock` with unit and mock tests. Install with `uv sync --group dev`, then run `uv run pytest tests/`. |
 
@@ -242,6 +244,9 @@ TTS_PROVIDER=sarvam     # sarvam | openai
 
 ## Documentation
 
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - System architecture and control-plane overview
+- [`docs/PLUGIN_SYSTEM.md`](docs/PLUGIN_SYSTEM.md) - Dynamic MCP tool/plugin contract
+- [`docs/SECURITY.md`](docs/SECURITY.md) - Trust boundaries, guardrails, and hardening checklist
 - [`docs/TOOLS.md`](docs/TOOLS.md) — Full catalogue of every MCP tool
 - [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) — Five end-to-end workflow examples
 

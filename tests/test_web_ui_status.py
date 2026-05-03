@@ -73,6 +73,7 @@ def test_local_status_payload_contains_phase_one_fields(monkeypatch, mock_worksp
         "diagnostics",
         "mcp_server_url",
         "codex_relay",
+        "tool_capabilities",
     }
 
     assert expected_keys.issubset(status.keys())
@@ -84,6 +85,7 @@ def test_local_status_payload_contains_phase_one_fields(monkeypatch, mock_worksp
     assert status["llm_provider"] == "openai"
     assert status["mcp_server_url"] == "http://127.0.0.1:8123/sse"
     assert status["codex_relay"]["project_path"] == str(mock_workspace)
+    assert status["tool_capabilities"]["module_count"] >= 0
     assert status["diagnostics"]["transport"]["effective_local_mcp_server_url"] == "http://127.0.0.1:8123/sse"
     if not status["is_windows"]:
         assert status["desktop_control_ready"] is False

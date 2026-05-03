@@ -30,7 +30,7 @@ from friday.local_chat import (
 from friday.observability.timeline import read_timeline_events
 from friday.safety.approval_gate import list_pending_approvals, resolve_pending_approval
 from friday.safety.emergency_stop import clear_emergency_stop, emergency_stop_status, trigger_emergency_stop
-from friday.tools import get_tool_module_status
+from friday.tools import build_tool_capability_manifest, get_tool_module_status
 
 
 logger = logging.getLogger("friday.web_ui")
@@ -127,6 +127,7 @@ def _local_status(request: Request | None = None) -> dict[str, Any]:
             "ready": diagnostics["chat_ready"],
             "greeting": local_greeting(),
             "codex_relay": codex_status,
+            "tool_capabilities": build_tool_capability_manifest(tool_modules),
             "timeline_events": read_timeline_events(limit=20),
             "emergency_stop": diagnostics.get("emergency_stop", emergency_stop_status()),
             "legacy_livekit_configured": bool(
@@ -819,6 +820,524 @@ def _render_page(request: Request) -> str:
           grid-template-columns: 1fr;
         }}
       }}
+
+      body.modal-open {{
+        overflow: hidden;
+      }}
+
+      .minimal-shell {{
+        width: min(960px, calc(100% - 28px));
+        min-height: calc(100vh - 48px);
+        margin: 24px auto;
+        padding: 24px;
+        display: grid;
+        align-content: space-between;
+        gap: 24px;
+        position: relative;
+        z-index: 1;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 34px;
+        background:
+          linear-gradient(180deg, rgba(9, 20, 31, 0.94), rgba(5, 13, 20, 0.98)),
+          radial-gradient(circle at top, rgba(42, 209, 190, 0.08), transparent 32%);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(14px);
+      }}
+
+      .top-strip {{
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }}
+
+      .brand-cluster {{
+        display: grid;
+        gap: 12px;
+      }}
+
+      .minimal-badge {{
+        width: fit-content;
+      }}
+
+      .brand-copy {{
+        display: grid;
+        gap: 6px;
+      }}
+
+      .minimal-title {{
+        margin: 0;
+        max-width: none;
+        font-size: clamp(2.1rem, 5vw, 3.7rem);
+        line-height: 0.95;
+        letter-spacing: -0.05em;
+      }}
+
+      .minimal-subtitle {{
+        margin: 0;
+        max-width: 38rem;
+        color: var(--muted);
+        line-height: 1.6;
+      }}
+
+      .top-actions {{
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 10px;
+      }}
+
+      .ghost-button {{
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 999px;
+        background: rgba(255,255,255,0.04);
+        color: var(--text);
+        padding: 10px 14px;
+        font: inherit;
+        cursor: pointer;
+        transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+      }}
+
+      .ghost-button:hover {{
+        transform: translateY(-1px);
+        border-color: rgba(255,255,255,0.16);
+        background: rgba(255,255,255,0.07);
+      }}
+
+      .ghost-button.alert {{
+        border-color: rgba(255, 200, 87, 0.34);
+        color: var(--warn);
+      }}
+
+      .orb-stage {{
+        display: grid;
+        justify-items: center;
+        gap: 22px;
+        padding: 8px 0;
+      }}
+
+      .orb-shell {{
+        position: relative;
+        width: min(48vw, 360px);
+        aspect-ratio: 1;
+        display: grid;
+        place-items: center;
+        cursor: default;
+        --orb-tilt-x: 0deg;
+        --orb-tilt-y: 0deg;
+      }}
+
+      .orb-halo {{
+        position: absolute;
+        inset: 9%;
+        border-radius: 50%;
+        background:
+          radial-gradient(circle, rgba(42, 209, 190, 0.2), rgba(42, 209, 190, 0.06) 42%, transparent 72%);
+        filter: blur(18px);
+        opacity: 0.95;
+        animation: halo-breathe 5.8s ease-in-out infinite;
+      }}
+
+      .orb-core {{
+        position: relative;
+        width: 58%;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.14);
+        background:
+          radial-gradient(circle at 30% 28%, rgba(255,255,255,0.3), rgba(255,255,255,0.08) 18%, transparent 34%),
+          radial-gradient(circle at 72% 70%, rgba(255, 123, 71, 0.24), transparent 30%),
+          radial-gradient(circle at center, rgba(42, 209, 190, 0.22), rgba(42, 209, 190, 0.06) 55%, transparent 78%);
+        box-shadow:
+          0 0 70px rgba(42, 209, 190, 0.2),
+          inset 0 0 30px rgba(255,255,255,0.07);
+        transform: rotateX(var(--orb-tilt-x)) rotateY(var(--orb-tilt-y));
+        transition: transform 160ms ease-out, box-shadow 180ms ease-out, opacity 180ms ease-out;
+        animation: orb-drift 10s ease-in-out infinite;
+        backdrop-filter: blur(12px);
+      }}
+
+      .orb-shell.thinking .orb-core {{
+        box-shadow:
+          0 0 90px rgba(255, 123, 71, 0.24),
+          inset 0 0 34px rgba(255,255,255,0.08);
+      }}
+
+      .orb-dot {{
+        position: absolute;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.74);
+        box-shadow: 0 0 12px rgba(255,255,255,0.24);
+      }}
+
+      .orb-dot.dot-a {{
+        width: 7px;
+        height: 7px;
+        top: 24%;
+        left: 23%;
+      }}
+
+      .orb-dot.dot-b {{
+        width: 5px;
+        height: 5px;
+        right: 22%;
+        top: 37%;
+        background: rgba(42, 209, 190, 0.82);
+      }}
+
+      .orb-dot.dot-c {{
+        width: 4px;
+        height: 4px;
+        left: 48%;
+        bottom: 18%;
+        background: rgba(255, 200, 87, 0.86);
+      }}
+
+      .response-peek {{
+        width: min(100%, 720px);
+        padding: 18px 20px;
+        border-radius: 24px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.03);
+        text-align: center;
+      }}
+
+      .response-label {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.06);
+        color: var(--muted);
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+      }}
+
+      .response-peek p {{
+        margin: 12px 0 0;
+        color: var(--text);
+        line-height: 1.68;
+      }}
+
+      .control-hub {{
+        width: min(100%, 760px);
+        margin: 0 auto;
+        padding: 18px;
+        border-radius: 28px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(7, 16, 24, 0.78);
+        display: grid;
+        gap: 14px;
+      }}
+
+      .mode-row {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }}
+
+      .mode-controls {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }}
+
+      .mode-chip {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.08);
+        color: var(--muted);
+        background: rgba(255,255,255,0.03);
+      }}
+
+      .mode-chip select {{
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+      }}
+
+      .micro-toggle {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+      }}
+
+      .project-row {{
+        display: grid;
+        gap: 8px;
+      }}
+
+      .project-row[hidden] {{
+        display: none;
+      }}
+
+      .project-label {{
+        color: var(--muted);
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+      }}
+
+      .path-input.minimal-path {{
+        border-radius: 18px;
+        padding: 13px 15px;
+      }}
+
+      .codex-banner.minimal-banner {{
+        margin: 0;
+        border-radius: 18px;
+      }}
+
+      .input-row {{
+        display: grid;
+      }}
+
+      .input-row textarea {{
+        width: 100%;
+        min-height: 96px;
+        resize: none;
+        padding: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        line-height: 1.65;
+      }}
+
+      .control-row {{
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+      }}
+
+      .control-row .button {{
+        min-width: 134px;
+      }}
+
+      .mini-status-bar {{
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+      }}
+
+      .mini-pill {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.03);
+        color: var(--muted);
+      }}
+
+      .mini-pill .status-pill {{
+        padding: 0;
+        background: transparent;
+        color: inherit;
+      }}
+
+      .modal-backdrop {{
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: rgba(3, 8, 12, 0.72);
+        backdrop-filter: blur(10px);
+      }}
+
+      .modal-backdrop[hidden] {{
+        display: none;
+      }}
+
+      .modal-panel {{
+        width: min(760px, 100%);
+        max-height: min(84vh, 920px);
+        overflow: auto;
+        padding: 22px;
+        border-radius: 28px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: linear-gradient(180deg, rgba(9, 20, 31, 0.98), rgba(5, 13, 20, 0.99));
+        box-shadow: var(--shadow);
+      }}
+
+      .modal-head {{
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 14px;
+        margin-bottom: 18px;
+      }}
+
+      .modal-head h2 {{
+        margin: 0;
+        font-size: 1.3rem;
+      }}
+
+      .modal-head p {{
+        margin: 6px 0 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }}
+
+      .modal-close {{
+        min-width: auto;
+        padding-inline: 14px;
+      }}
+
+      .history-feed.message-log {{
+        min-height: auto;
+        max-height: none;
+        padding: 0;
+        border: 0;
+        background: transparent;
+      }}
+
+      .history-feed .message {{
+        max-width: 100%;
+      }}
+
+      .system-grid {{
+        display: grid;
+        gap: 16px;
+      }}
+
+      .system-card {{
+        padding: 16px 18px;
+        border-radius: 22px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.03);
+      }}
+
+      .system-card h3 {{
+        margin: 0 0 10px;
+        font-size: 1rem;
+      }}
+
+      .system-card p,
+      .system-card li {{
+        color: var(--muted);
+        line-height: 1.6;
+      }}
+
+      .system-card ul {{
+        margin: 0;
+        padding-left: 18px;
+      }}
+
+      .approval-list {{
+        display: grid;
+        gap: 14px;
+      }}
+
+      .approval-card {{
+        padding: 16px 18px;
+        border-radius: 22px;
+        border: 1px solid rgba(255, 200, 87, 0.24);
+        background: rgba(255, 200, 87, 0.08);
+      }}
+
+      .approval-card strong {{
+        display: block;
+        color: var(--warn);
+        margin-bottom: 6px;
+      }}
+
+      .approval-card p {{
+        margin: 0;
+        color: var(--text);
+        line-height: 1.6;
+      }}
+
+      .approval-card .meta {{
+        margin-top: 10px;
+        color: var(--muted);
+      }}
+
+      .approval-card .approval-actions {{
+        margin-top: 14px;
+      }}
+
+      .empty-state {{
+        padding: 22px;
+        border-radius: 22px;
+        border: 1px dashed rgba(255,255,255,0.12);
+        color: var(--muted);
+        text-align: center;
+      }}
+
+      @keyframes halo-breathe {{
+        0%, 100% {{ transform: scale(0.98); opacity: 0.82; }}
+        50% {{ transform: scale(1.04); opacity: 1; }}
+      }}
+
+      @keyframes orb-drift {{
+        0%, 100% {{ transform: rotateX(var(--orb-tilt-x)) rotateY(var(--orb-tilt-y)) translateY(0px); }}
+        50% {{ transform: rotateX(calc(var(--orb-tilt-x) + 2deg)) rotateY(calc(var(--orb-tilt-y) - 2deg)) translateY(-8px); }}
+      }}
+
+      @media (max-width: 740px) {{
+        .minimal-shell {{
+          width: calc(100% - 20px);
+          margin: 10px auto;
+          padding: 18px;
+          min-height: calc(100vh - 20px);
+        }}
+
+        .top-strip {{
+          flex-direction: column;
+          align-items: stretch;
+        }}
+
+        .top-actions {{
+          justify-content: flex-start;
+        }}
+
+        .orb-shell {{
+          width: min(70vw, 320px);
+        }}
+
+        .control-row .button,
+        .ghost-button {{
+          width: 100%;
+        }}
+
+        .control-row,
+        .mini-status-bar {{
+          justify-content: flex-start;
+        }}
+
+        .mini-pill,
+        .mode-row,
+        .mode-controls {{
+          width: 100%;
+        }}
+
+        .mode-row {{
+          align-items: flex-start;
+        }}
+
+        .modal-backdrop {{
+          padding: 14px;
+        }}
+      }}
     </style>
   </head>
   <body>
@@ -826,41 +1345,134 @@ def _render_page(request: Request) -> str:
       <div class="pointer-aura"></div>
       <div class="pointer-sphere"></div>
     </div>
-    <main class="shell">
-      <section class="hero">
-        <div class="eyebrow"><span class="pulse"></span>Local Browser Mode</div>
-        <h1>{server_name}</h1>
-        <p>
-          One terminal. One page. No LiveKit handoff. Type or use your browser microphone here,
-          and FRIDAY will reason on the backend while calling your MCP tools locally.
-        </p>
-        <div class="hero-actions">
-          <a class="button button-primary" href="#pilot-console">Open Console</a>
-          <button class="button button-secondary" type="button" data-copy="uv run friday">Copy Run Command</button>
-          <button class="button button-secondary" type="button" data-copy="{mcp_server_url}">Copy MCP URL</button>
+    <main class="minimal-shell" id="pilot-console">
+      <header class="top-strip">
+        <div class="brand-cluster">
+          <div class="eyebrow minimal-badge"><span class="pulse"></span>Local Browser Mode</div>
+          <div class="brand-copy">
+            <h1 class="minimal-title">{server_name}</h1>
+            <p class="minimal-subtitle" id="surface-status-line">
+              One orb, one mic, one prompt. History and approvals stay tucked away until you need them.
+            </p>
+          </div>
         </div>
-        <div class="hero-sphere" aria-hidden="true">
-          <span class="hero-sphere-dot dot-a"></span>
-          <span class="hero-sphere-dot dot-b"></span>
-          <span class="hero-sphere-dot dot-c"></span>
+
+        <div class="top-actions">
+          <button class="ghost-button" id="history-button" type="button" data-modal-open="history">History</button>
+          <button class="ghost-button" id="timeline-button" type="button" data-modal-open="timeline">Timeline</button>
+          <button class="ghost-button" id="system-button" type="button" data-modal-open="system">System</button>
+          <button class="ghost-button alert" id="approval-button" type="button" data-modal-open="approval" hidden>Approvals</button>
+        </div>
+      </header>
+
+      <section class="orb-stage">
+        <div class="orb-shell" id="orb-shell" aria-hidden="true">
+          <div class="orb-halo"></div>
+          <div class="orb-core">
+            <span class="orb-dot dot-a"></span>
+            <span class="orb-dot dot-b"></span>
+            <span class="orb-dot dot-c"></span>
+          </div>
+        </div>
+
+        <div class="response-peek" id="response-peek">
+          <span class="response-label" id="response-label">Friday</span>
+          <p id="response-preview">{greeting}</p>
         </div>
       </section>
 
-      <section class="grid">
-        <article class="card status-card">
-          <div class="card-inner">
-            <h2>System Status</h2>
-            <div class="status-pill {readiness_class}" id="readiness-pill">{readiness}</div>
-            <p class="status-note">
-              Local browser mode only needs the server and an OpenAI key. Speech input and spoken replies are handled by your browser when supported.
-            </p>
-            <ul class="issue-list" id="issue-list">{issue_items}</ul>
+      <section class="control-hub">
+        <div class="mode-row">
+          <div class="mode-controls">
+            <label class="mode-chip">
+              <span>Mode</span>
+              <select id="dispatch-mode">
+                <option value="friday">FRIDAY Local Chat</option>
+                <option value="codex">VS Code Codex Relay</option>
+              </select>
+            </label>
+            <button class="ghost-button" type="button" data-copy="uv run friday">Copy Run Command</button>
           </div>
-        </article>
 
-        <article class="card detail-card">
-          <div class="card-inner">
-            <h2>Stack Snapshot</h2>
+          <label class="micro-toggle">
+            <input id="speak-toggle" type="checkbox" checked>
+            Speak replies
+          </label>
+        </div>
+
+        <label class="project-row" id="project-row" hidden>
+          <span class="project-label">Project Folder</span>
+          <input class="path-input minimal-path" id="project-path-input" type="text" value="{codex_project_path}" spellcheck="false">
+        </label>
+
+        <div class="codex-banner minimal-banner" id="codex-banner" hidden>
+          Relay mode opens VS Code on the project folder, opens the Codex sidebar, starts a new thread, and pastes a FRIDAY-generated project brief plus your request.
+        </div>
+
+        <div class="input-row">
+          <textarea id="prompt-input" placeholder="Ask FRIDAY to open apps, browse, search, type, or run a local task."></textarea>
+        </div>
+
+        <div class="control-row">
+          <button class="button button-secondary button-mic" id="mic-button" type="button">Start Mic</button>
+          <button class="button button-primary" id="send-button" type="button">Send</button>
+          <button class="button button-secondary" id="stop-speech" type="button">Stop Voice</button>
+        </div>
+
+        <p class="voice-status" id="voice-status">Voice idle. Click Start Mic or type your request.</p>
+      </section>
+
+      <section class="mini-status-bar">
+        <div class="mini-pill"><span id="readiness-pill" class="status-pill {readiness_class}">{readiness}</span></div>
+        <div class="mini-pill">Mode <span id="access-mode-label">{access_mode}</span></div>
+        <div class="mini-pill">Codex <span id="codex-status-label">{html.escape(codex_status_label)}</span></div>
+        <div class="mini-pill" id="stop-status">Emergency stop: clear</div>
+      </section>
+    </main>
+
+    <div class="modal-backdrop" id="history-modal" hidden>
+      <section class="modal-panel">
+        <div class="modal-head">
+          <div>
+            <h2>Conversation History</h2>
+            <p>Your recent chat stays out of the main surface and lives here.</p>
+          </div>
+          <button class="button button-secondary modal-close" type="button" data-modal-close="history">Close</button>
+        </div>
+        <div class="message-log history-feed" id="message-log"></div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="timeline-modal" hidden>
+      <section class="modal-panel">
+        <div class="modal-head">
+          <div>
+            <h2>Action Timeline</h2>
+            <p>Live observe, plan, act, verify, and recovery events from FRIDAY.</p>
+          </div>
+          <button class="button button-secondary modal-close" type="button" data-modal-close="timeline">Close</button>
+        </div>
+        <div class="timeline-list" id="timeline-list"></div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="system-modal" hidden>
+      <section class="modal-panel">
+        <div class="modal-head">
+          <div>
+            <h2>System</h2>
+            <p>Readiness, issues, voice notes, and local control state.</p>
+          </div>
+          <button class="button button-secondary modal-close" type="button" data-modal-close="system">Close</button>
+        </div>
+        <div class="system-grid">
+          <section class="system-card">
+            <h3>Readiness</h3>
+            <ul class="issue-list" id="issue-list">{issue_items}</ul>
+          </section>
+
+          <section class="system-card">
+            <h3>Stack Snapshot</h3>
             <div class="metric-grid">
               <div class="metric-box">
                 <span class="metric-label">Run Once</span>
@@ -875,104 +1487,49 @@ def _render_page(request: Request) -> str:
                 <span class="metric-value" id="mcp-url">{mcp_server_url}</span>
               </div>
             </div>
-            <div class="command-block">uv run friday</div>
-          </div>
-        </article>
-      </section>
-
-      <section class="card" id="pilot-console">
-        <div class="card-inner console">
-          <div class="chat-shell">
-            <div class="message-log" id="message-log"></div>
-
-            <div class="composer">
-              <div class="composer-meta">
-                <label class="field-stack">
-                  <span class="field-label">Dispatch Mode</span>
-                  <select class="mode-select" id="dispatch-mode">
-                    <option value="friday">FRIDAY Local Chat</option>
-                    <option value="codex">VS Code Codex Relay</option>
-                  </select>
-                </label>
-                <label class="field-stack">
-                  <span class="field-label">Project Folder</span>
-                  <input class="path-input" id="project-path-input" type="text" value="{codex_project_path}" spellcheck="false">
-                </label>
-              </div>
-              <div class="codex-banner" id="codex-banner">
-                Relay mode opens VS Code on the project folder, opens the Codex sidebar, starts a new thread, and pastes a FRIDAY-generated project brief plus your request.
-              </div>
-              <textarea id="prompt-input" placeholder="Ask FRIDAY to open apps, create folders, search installed software, or run desktop tasks."></textarea>
-              <div class="composer-footer">
-                <div class="composer-actions">
-                  <button class="button button-primary" id="send-button" type="button">Send</button>
-                  <button class="button button-secondary button-mic" id="mic-button" type="button">Start Mic</button>
-                  <button class="button button-secondary" id="stop-speech" type="button">Stop Voice</button>
-                </div>
-                <label class="toggle">
-                  <input id="speak-toggle" type="checkbox" checked>
-                  Speak replies aloud
-                </label>
-              </div>
-              <p class="voice-status" id="voice-status">Voice idle. Click Start Mic or type your request.</p>
+            <div class="hero-actions">
+              <button class="button button-secondary" type="button" data-copy="{mcp_server_url}">Copy MCP URL</button>
             </div>
-          </div>
+          </section>
 
-          <aside class="side-panel">
-            <section class="side-card">
-              <h3>What Changed</h3>
-              <p class="mini">The local page is now the primary experience. You no longer need the LiveKit playground for normal use.</p>
-            </section>
+          <section class="system-card">
+            <h3>Codex Relay</h3>
+            <p class="mini" id="codex-status-note">{html.escape(codex_status_text)}</p>
+          </section>
 
-            <section class="side-card">
-              <h3>Voice Notes</h3>
-              <ul>
-                <li>Mic input streams short browser-recorded chunks to the local backend for live transcription updates.</li>
-                <li>Spoken replies use the browser speech engine, so voices depend on your system.</li>
-                <li>In Codex relay mode, final speech is sent straight into the VS Code Codex chat flow.</li>
-                <li>If browser speech is unavailable, typing still works.</li>
-              </ul>
-            </section>
+          <section class="system-card">
+            <h3>Voice Notes</h3>
+            <ul>
+              <li>Mic input streams short browser-recorded chunks to the local backend for live transcription updates.</li>
+              <li>Spoken replies use the browser speech engine, so voices depend on your system.</li>
+              <li>If browser speech is unavailable, typing still works.</li>
+            </ul>
+          </section>
 
-            <section class="side-card">
-              <h3>Opening Websites</h3>
-              <p class="mini">Browser automation uses FRIDAY's own automation browser window. It does not take over your current Edge tab unless a desktop-control tool explicitly does that.</p>
-            </section>
-
-            <section class="side-card">
-              <h3>Access Mode</h3>
-              <p class="mini footer-note">Mode: <span id="access-mode-label">{access_mode}</span></p>
-              <p class="mini footer-note" id="stop-status">Emergency stop: clear</p>
-              <div class="composer-actions">
-                <button class="button button-secondary" id="emergency-stop-button" type="button">Emergency Stop</button>
-                <button class="button button-secondary" id="clear-stop-button" type="button">Clear Stop</button>
-              </div>
-            </section>
-
-            <section class="side-card">
-              <h3>Action Timeline</h3>
-              <div class="timeline-list" id="timeline-list"></div>
-            </section>
-
-            <section class="side-card">
-              <h3>Codex Relay</h3>
-              <p class="mini" id="codex-status-note">{html.escape(codex_status_text)}</p>
-              <p class="mini footer-note">Status: <span id="codex-status-label">{html.escape(codex_status_label)}</span></p>
-            </section>
-
-            <section class="side-card">
-              <h3>Greeting</h3>
-              <p class="mini">{greeting}</p>
-            </section>
-
-            <section class="side-card">
-              <h3>Advanced</h3>
-              <p class="mini footer-note">Legacy LiveKit mode can still exist in the codebase, but this page no longer depends on it.</p>
-            </section>
-          </aside>
+          <section class="system-card">
+            <h3>Safety Controls</h3>
+            <p class="mini footer-note">Current mode: <span>{access_mode}</span></p>
+            <div class="control-row">
+              <button class="button button-secondary" id="emergency-stop-button" type="button">Emergency Stop</button>
+              <button class="button button-secondary" id="clear-stop-button" type="button">Clear Stop</button>
+            </div>
+          </section>
         </div>
       </section>
-    </main>
+    </div>
+
+    <div class="modal-backdrop" id="approval-modal" hidden>
+      <section class="modal-panel">
+        <div class="modal-head">
+          <div>
+            <h2>Confirm Action</h2>
+            <p>FRIDAY pauses here before sensitive actions. Review the exact target, then approve or deny.</p>
+          </div>
+          <button class="button button-secondary modal-close" type="button" data-modal-close="approval">Close</button>
+        </div>
+        <div class="approval-list" id="approval-list"></div>
+      </section>
+    </div>
 
     <script>
       const initialGreeting = {json.dumps(state["greeting"])};
@@ -998,7 +1555,9 @@ def _render_page(request: Request) -> str:
       const speakToggle = document.getElementById("speak-toggle");
       const dispatchMode = document.getElementById("dispatch-mode");
       const projectPathInput = document.getElementById("project-path-input");
+      const projectRow = document.getElementById("project-row");
       const voiceStatus = document.getElementById("voice-status");
+      const surfaceStatusLine = document.getElementById("surface-status-line");
       const codexBanner = document.getElementById("codex-banner");
       const codexStatusNote = document.getElementById("codex-status-note");
       const codexStatusLabel = document.getElementById("codex-status-label");
@@ -1009,6 +1568,25 @@ def _render_page(request: Request) -> str:
       const emergencyStopButton = document.getElementById("emergency-stop-button");
       const clearStopButton = document.getElementById("clear-stop-button");
       const timelineList = document.getElementById("timeline-list");
+      const responseLabel = document.getElementById("response-label");
+      const responsePreview = document.getElementById("response-preview");
+      const historyButton = document.getElementById("history-button");
+      const timelineButton = document.getElementById("timeline-button");
+      const systemButton = document.getElementById("system-button");
+      const approvalButton = document.getElementById("approval-button");
+      const orbShell = document.getElementById("orb-shell");
+      const historyModal = document.getElementById("history-modal");
+      const timelineModal = document.getElementById("timeline-modal");
+      const systemModal = document.getElementById("system-modal");
+      const approvalModal = document.getElementById("approval-modal");
+      const approvalList = document.getElementById("approval-list");
+      const modalMap = {{
+        history: historyModal,
+        timeline: timelineModal,
+        system: systemModal,
+        approval: approvalModal,
+      }};
+      const resolvedApprovalIds = new Set();
 
       function updatePointerField(x, y) {{
         document.documentElement.style.setProperty("--pointer-x", `${{x}}px`);
@@ -1050,6 +1628,85 @@ def _render_page(request: Request) -> str:
           .replaceAll("'", "&#39;");
       }}
 
+      function latestDisplayMessage() {{
+        const latest = [...appState.messages].reverse().find((message) => message.role !== "user");
+        return latest || appState.messages[appState.messages.length - 1] || {{
+          role: "assistant",
+          content: initialGreeting,
+          toolEvents: [],
+          approvalRequests: [],
+        }};
+      }}
+
+      function currentApprovals() {{
+        const approvals = new Map();
+        for (const message of appState.messages) {{
+          for (const approval of (Array.isArray(message.approvalRequests) ? message.approvalRequests : [])) {{
+            const approvalId = String(approval.approval_id || "");
+            if (!approvalId || resolvedApprovalIds.has(approvalId)) {{
+              continue;
+            }}
+            approvals.set(approvalId, approval);
+          }}
+        }}
+        return Array.from(approvals.values());
+      }}
+
+      function setModalOpen(name, isOpen) {{
+        const modal = modalMap[name];
+        if (!modal) {{
+          return;
+        }}
+        modal.hidden = !isOpen;
+        const hasOpenModal = Object.values(modalMap).some((candidate) => candidate && candidate.hidden === false);
+        document.body.classList.toggle("modal-open", hasOpenModal);
+      }}
+
+      function closeAllModals() {{
+        Object.keys(modalMap).forEach((name) => setModalOpen(name, false));
+      }}
+
+      function updateHistoryButton() {{
+        const historyCount = Math.max(0, appState.messages.length - 1);
+        historyButton.textContent = historyCount ? `History (${{historyCount}})` : "History";
+      }}
+
+      function updateResponsePeek() {{
+        const latest = latestDisplayMessage();
+        responseLabel.textContent = latest.role === "system" ? "System" : "Friday";
+        responsePreview.textContent = latest.content || initialGreeting;
+      }}
+
+      function renderApprovalModal() {{
+        const approvals = currentApprovals();
+        approvalButton.hidden = approvals.length === 0;
+        approvalButton.textContent = approvals.length > 1 ? `Approvals (${{approvals.length}})` : "Approval";
+
+        if (!approvals.length) {{
+          approvalList.innerHTML = `<div class="empty-state">No approvals are waiting right now.</div>`;
+          setModalOpen("approval", false);
+          return;
+        }}
+
+        approvalList.innerHTML = approvals.map((approval) => {{
+          const risk = escapeHtml(String(approval.risk_label || `Level ${{approval.risk_level || "?"}}`));
+          const summary = escapeHtml(String(approval.action_summary || approval.tool || "Local action"));
+          const reason = escapeHtml(String(approval.risk_explanation || approval.decision_reason || ""));
+          const id = escapeHtml(String(approval.approval_id || ""));
+          return `
+            <article class="approval-card">
+              <strong>Approval required</strong>
+              <p>${{summary}}</p>
+              <p class="meta">${{risk}}${{reason ? `: ${{reason}}` : ""}}</p>
+              <div class="approval-actions">
+                <button class="button button-primary" type="button" data-approval-action="approve" data-approval-id="${{id}}">Approve Once</button>
+                <button class="button button-secondary" type="button" data-approval-action="deny" data-approval-id="${{id}}">Deny</button>
+              </div>
+            </article>
+          `;
+        }}).join("");
+      }}
+
       function renderMessages() {{
         messageLog.innerHTML = appState.messages.map((message) => {{
           const label = message.role === "user" ? "Boss" : (message.role === "assistant" ? "Friday" : "System");
@@ -1061,35 +1718,18 @@ def _render_page(request: Request) -> str:
                 return `<span class="${{chipClass}}"${{chipTitle}}>${{chipLabel}}</span>`;
               }}).join("")}}</div>`
             : "";
-          const approvals = Array.isArray(message.approvalRequests) && message.approvalRequests.length
-            ? message.approvalRequests.map((approval) => {{
-                const risk = escapeHtml(String(approval.risk_label || `Level ${{approval.risk_level || "?"}}`));
-                const summary = escapeHtml(String(approval.action_summary || approval.tool || "Local action"));
-                const reason = escapeHtml(String(approval.risk_explanation || approval.decision_reason || ""));
-                const id = escapeHtml(String(approval.approval_id || ""));
-                return `
-                  <div class="approval-box" data-approval-box="${{id}}">
-                    <strong>Approval required</strong><br>
-                    <span>${{summary}}</span><br>
-                    <span>${{risk}}${{reason ? `: ${{reason}}` : ""}}</span>
-                    <div class="approval-actions">
-                      <button class="button button-primary" type="button" data-approval-action="approve" data-approval-id="${{id}}">Approve Once</button>
-                      <button class="button button-secondary" type="button" data-approval-action="deny" data-approval-id="${{id}}">Deny</button>
-                    </div>
-                  </div>
-                `;
-              }}).join("")
-            : "";
           return `
             <article class="message ${{message.role}}">
               <span class="message-label">${{label}}</span>
               <div>${{escapeHtml(message.content)}}</div>
               ${{toolEvents}}
-              ${{approvals}}
             </article>
           `;
         }}).join("");
         messageLog.scrollTop = messageLog.scrollHeight;
+        updateHistoryButton();
+        updateResponsePeek();
+        renderApprovalModal();
       }}
 
       function activeModeReady() {{
@@ -1099,11 +1739,19 @@ def _render_page(request: Request) -> str:
       function setVoiceStatus(message, tone = "info") {{
         voiceStatus.textContent = message;
         voiceStatus.className = tone === "info" ? "voice-status" : `voice-status ${{tone}}`;
+        surfaceStatusLine.textContent = message;
       }}
 
       function setBusy(isBusy) {{
         appState.busy = isBusy;
         sendButton.disabled = isBusy || !activeModeReady();
+        dispatchMode.disabled = isBusy;
+        projectPathInput.disabled = isBusy;
+        historyButton.disabled = isBusy;
+        timelineButton.disabled = isBusy;
+        systemButton.disabled = isBusy;
+        approvalButton.disabled = isBusy;
+        orbShell.classList.toggle("thinking", isBusy || appState.listening || appState.micStarting);
         updateMicButton();
       }}
 
@@ -1113,16 +1761,20 @@ def _render_page(request: Request) -> str:
         promptInput.placeholder = codexMode
           ? "Describe what Codex should do in this project. FRIDAY will attach a local project brief before sending it."
           : "Ask FRIDAY to open apps, create folders, search installed software, or run desktop tasks.";
+        projectRow.hidden = !codexMode;
         codexBanner.hidden = !codexMode;
         setBusy(appState.busy);
       }}
 
       function addMessage(role, content, toolEvents = [], approvalRequests = []) {{
         appState.messages.push({{ role, content, toolEvents, approvalRequests }});
-        if (appState.messages.length > 18) {{
-          appState.messages = appState.messages.slice(-18);
+        if (appState.messages.length > 40) {{
+          appState.messages = appState.messages.slice(-40);
         }}
         renderMessages();
+        if (approvalRequests.length) {{
+          setModalOpen("approval", true);
+        }}
       }}
 
       function speakReply(text) {{
@@ -1243,6 +1895,7 @@ def _render_page(request: Request) -> str:
           if (!response.ok) {{
             addMessage("system", data.error || "Approval response failed.");
           }} else {{
+            resolvedApprovalIds.add(approvalId);
             addMessage("assistant", data.reply || "Approval response recorded.", data.tool_events || [], data.approval_requests || []);
             if (decision === "approve") {{
               speakReply(data.reply || "");
@@ -1254,6 +1907,7 @@ def _render_page(request: Request) -> str:
         }} finally {{
           setBusy(false);
           await refreshTimeline();
+          renderApprovalModal();
         }}
       }}
 
@@ -1327,6 +1981,7 @@ def _render_page(request: Request) -> str:
           micButton.disabled = true;
           micButton.classList.remove("starting");
           micButton.classList.remove("listening");
+          orbShell.classList.remove("thinking");
           return;
         }}
 
@@ -1336,6 +1991,7 @@ def _render_page(request: Request) -> str:
         micButton.disabled = appState.busy || !activeModeReady() || appState.micStarting;
         micButton.classList.toggle("starting", appState.micStarting);
         micButton.classList.toggle("listening", appState.listening);
+        orbShell.classList.toggle("thinking", appState.busy || appState.listening || appState.micStarting);
       }}
 
       function secureMicContext() {{
@@ -1767,6 +2423,32 @@ def _render_page(request: Request) -> str:
         button.addEventListener("click", () => copyText(button.dataset.copy, button));
       }});
 
+      document.querySelectorAll("[data-modal-open]").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const target = button.getAttribute("data-modal-open");
+          if (target) {{
+            setModalOpen(target, true);
+          }}
+        }});
+      }});
+
+      document.querySelectorAll("[data-modal-close]").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const target = button.getAttribute("data-modal-close");
+          if (target) {{
+            setModalOpen(target, false);
+          }}
+        }});
+      }});
+
+      document.querySelectorAll(".modal-backdrop").forEach((modal) => {{
+        modal.addEventListener("click", (event) => {{
+          if (event.target === modal) {{
+            closeAllModals();
+          }}
+        }});
+      }});
+
       dispatchMode.addEventListener("change", updateComposerMode);
       sendButton.addEventListener("click", () => sendPrompt(promptInput.value));
       promptInput.addEventListener("keydown", (event) => {{
@@ -1776,7 +2458,7 @@ def _render_page(request: Request) -> str:
         }}
       }});
 
-      messageLog.addEventListener("click", (event) => {{
+      approvalList.addEventListener("click", (event) => {{
         const target = event.target;
         if (!(target instanceof HTMLElement)) {{
           return;
@@ -1823,12 +2505,31 @@ def _render_page(request: Request) -> str:
       emergencyStopButton.addEventListener("click", () => setEmergencyStop("trigger"));
       clearStopButton.addEventListener("click", () => setEmergencyStop("clear"));
 
+      document.addEventListener("keydown", (event) => {{
+        if (event.key === "Escape") {{
+          closeAllModals();
+        }}
+      }});
+
       document.addEventListener("pointermove", (event) => {{
         updatePointerField(event.clientX, event.clientY);
       }});
 
       document.addEventListener("pointerleave", () => {{
         updatePointerField(window.innerWidth * 0.5, window.innerHeight * 0.18);
+      }});
+
+      orbShell.addEventListener("pointermove", (event) => {{
+        const rect = orbShell.getBoundingClientRect();
+        const xRatio = ((event.clientX - rect.left) / rect.width) - 0.5;
+        const yRatio = ((event.clientY - rect.top) / rect.height) - 0.5;
+        orbShell.style.setProperty("--orb-tilt-x", `${{(-yRatio * 12).toFixed(2)}}deg`);
+        orbShell.style.setProperty("--orb-tilt-y", `${{(xRatio * 12).toFixed(2)}}deg`);
+      }});
+
+      orbShell.addEventListener("pointerleave", () => {{
+        orbShell.style.setProperty("--orb-tilt-x", "0deg");
+        orbShell.style.setProperty("--orb-tilt-y", "0deg");
       }});
 
       setupMicrophone();
