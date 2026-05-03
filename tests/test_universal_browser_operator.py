@@ -78,3 +78,21 @@ def test_browser_plan_uses_dynamic_operator_for_websites():
     dynamic_step = next(step for step in plan.steps if step.action_type == "dynamic_browser_task")
     assert dynamic_step.tool_name == "browser_dynamic_loop"
     assert "hardcoded" not in dynamic_step.description.lower()
+
+
+def test_youtube_search_and_open_first_video_gets_end_to_end_plan():
+    route = route_user_command("open youtube search MKBHD and open first video")
+    plan = build_execution_plan("open youtube search MKBHD and open first video", route)
+
+    assert plan.supported is True
+    assert plan.intent == "browser"
+    assert [step.action_type for step in plan.steps] == [
+        "open_url",
+        "dynamic_search",
+        "click_first_result",
+        "verify_video_opened",
+    ]
+    assert plan.steps[0].parameters["url"] == "https://www.youtube.com"
+    assert plan.steps[1].tool_name == "browser_dynamic_loop"
+    assert plan.steps[2].tool_name == "browser_dynamic_loop"
+    assert plan.steps[3].tool_name == "browser_get_state"

@@ -984,7 +984,7 @@ def register(mcp):
         website selectors.
         """
         try:
-            from friday.browser.operator import BrowserAction, BrowserOperator, build_element_map_from_records, infer_site_url
+            from friday.browser.operator import BrowserAction, BrowserOperator, build_element_map_from_records, infer_site_url, wants_first_result_click
 
             operator = BrowserOperator()
             history: list[dict[str, object]] = []
@@ -1012,6 +1012,8 @@ def register(mcp):
             async def execute_action(action: BrowserAction) -> str:
                 if action.type == "complete":
                     return action.reason or "Goal complete."
+                if action.type in {"needs_clarification", "confirm_target"}:
+                    return action.reason or "Target is ambiguous; clarification is required."
                 if action.type == "navigate":
                     if _browser_backend == "http":
                         state = await _http_navigate(action.url)
@@ -1080,6 +1082,9 @@ def register(mcp):
                 history.append(action.to_dict())
                 decision = operator.permission_for_action(action, observation)
                 lines.append(f"Step {step}: selected {action.type} ({action.reason})")
+                if action.type in {"needs_clarification", "confirm_target"}:
+                    lines.append(action.reason or "Target is ambiguous; clarification is required.")
+                    break
                 if decision.get("decision") != "allow":
                     lines.append(f"Permission {decision.get('decision')}: {decision.get('reason')}")
                     break
@@ -1087,7 +1092,7 @@ def register(mcp):
                 lines.append(f"Result: {result}")
                 if action.type in {"complete", "screenshot_fallback"}:
                     break
-                if "search" in goal.lower() and action.type == "type_into_element":
+                if "search" in goal.lower() and action.type == "type_into_element" and not wants_first_result_click(goal):
                     break
 
             return "\n".join(lines) if lines else "No dynamic browser action was selected."

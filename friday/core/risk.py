@@ -209,15 +209,14 @@ def classify_shell_command(command: str) -> RiskAssessment:
             "shell",
         )
 
-    if any(marker in normalized for marker in ("|", ";", "&&", "||", "$(", "`")):
-        return RiskAssessment(RiskLevel.REVERSIBLE_CHANGE, "Compound shell command requires conservative handling.", "shell")
-
     if "git push" in normalized:
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Pushing code requires approval.", "shell")
     if "git commit" in normalized:
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Committing code requires approval.", "shell")
     if any(token in normalized for token in ("pip install", "uv pip install", "npm install", "brew install", "winget install", "apt install", "apt-get install")):
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Installing software/packages requires approval.", "shell")
+    if any(marker in normalized for marker in ("|", ";", "&&", "||", "$(", "`")):
+        return RiskAssessment(RiskLevel.REVERSIBLE_CHANGE, "Compound shell command requires conservative handling.", "shell")
     if normalized.startswith(("sudo ", "su ", "doas ")):
         return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Elevated/admin command requires approval.", "shell")
     if normalized.startswith(("rm ", "rmdir ", "del ", "erase ", "remove-item ")):
@@ -277,6 +276,10 @@ def classify_desktop_action(action: str) -> RiskAssessment:
     normalized = action.strip().lower()
     if normalized in {"inspect_screen", "screenshot", "list_apps", "list_windows", "active_window"}:
         return RiskAssessment(RiskLevel.READ_ONLY, "Desktop action is observational.", "desktop")
+    if normalized in {"start_screen_recording", "screen_recording_start", "record_screen"}:
+        return RiskAssessment(RiskLevel.SENSITIVE_ACTION, "Screen recording requires explicit user approval.", "desktop")
+    if normalized in {"stop_screen_recording", "screen_recording_stop", "save_recording"}:
+        return RiskAssessment(RiskLevel.READ_ONLY, "Stopping or saving an active screen recording is observational/local.", "desktop")
     if normalized in {"open_app", "focus_window", "type_text", "hotkey", "click", "scroll", "drag"}:
         return RiskAssessment(RiskLevel.REVERSIBLE_CHANGE, "Desktop action changes visible machine state.", "desktop")
     if normalized in {"close_app", "force_quit", "system_settings", "password_field"}:
@@ -338,5 +341,11 @@ def classify_tool_call(tool_name: str, arguments: dict[str, Any] | None = None) 
         return classify_desktop_action("type_text" if any(term in goal for term in ("type", "press", "click")) else "inspect_screen")
     if name in {"open_application", "focus_application", "type_text", "press_key", "gui_click"}:
         return classify_desktop_action("open_app" if name == "open_application" else name)
+    if name in {"start_screen_recording", "screen_recording_start"}:
+        return classify_desktop_action("start_screen_recording")
+    if name in {"stop_screen_recording", "screen_recording_stop", "save_screen_recording"}:
+        return classify_desktop_action("stop_screen_recording")
+    if name in {"take_screenshot", "inspect_desktop_screen"}:
+        return classify_desktop_action("screenshot")
 
     return RiskAssessment(RiskLevel.REVERSIBLE_CHANGE, "Unknown tool call may change local state.", "tool")

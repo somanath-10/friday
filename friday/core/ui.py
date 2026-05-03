@@ -27,6 +27,9 @@ SENSITIVE_TERMS = {
     "remove",
 }
 
+HIGH_CONFIDENCE_THRESHOLD = 0.75
+MEDIUM_CONFIDENCE_THRESHOLD = 0.45
+
 
 ROLE_SYNONYMS: dict[str, set[str]] = {
     "search": {"search", "searchbox", "textbox", "input", "edit"},
@@ -251,6 +254,26 @@ def find_target_element(
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: item.confidence, reverse=True)[0]
+
+
+def find_target(
+    goal: str,
+    observation: UIObservation | dict[str, Any] | list[UIElement],
+    context: dict[str, Any] | None = None,
+    constraints: dict[str, Any] | None = None,
+) -> ElementMatch | None:
+    """Rank a browser/desktop target using goal text plus recent task context."""
+    enriched_goal = goal
+    current_context = context or {}
+    context_terms = [
+        current_context.get("last_search_query"),
+        current_context.get("last_user_goal"),
+        current_context.get("last_app"),
+        current_context.get("last_active_window"),
+    ]
+    if any(str(term or "").strip() for term in context_terms):
+        enriched_goal = " ".join([goal, *(str(term) for term in context_terms if str(term or "").strip())])
+    return find_target_element(enriched_goal, observation, constraints)
 
 
 def rank_target_elements(

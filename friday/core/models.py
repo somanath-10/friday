@@ -18,6 +18,8 @@ class Intent(str, Enum):
     SHELL = "shell"
     CODE = "code"
     RESEARCH = "research"
+    SCREENSHOT = "screenshot"
+    SCREEN_RECORDING = "screen_recording"
     VOICE = "voice"
     MEMORY = "memory"
     WORKFLOW = "workflow"
@@ -169,6 +171,11 @@ class PipelineResult:
     verification_results: list[VerificationResult] = field(default_factory=list)
     recovery_results: list[RecoveryResult] = field(default_factory=list)
     status: str = "completed"
+    task_status: str = "completed"
+    completed_steps: list[str] = field(default_factory=list)
+    remaining_steps: list[str] = field(default_factory=list)
+    final_goal_verified: bool = False
+    verification_evidence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -179,6 +186,11 @@ class PipelineResult:
             "verification_results": [result.to_dict() for result in self.verification_results],
             "recovery_results": [result.to_dict() for result in self.recovery_results],
             "status": self.status,
+            "task_status": self.task_status,
+            "completed_steps": list(self.completed_steps),
+            "remaining_steps": list(self.remaining_steps),
+            "final_goal_verified": self.final_goal_verified,
+            "verification_evidence": list(self.verification_evidence),
         }
 
 
@@ -218,6 +230,11 @@ class PipelineRunResult:
     pipeline_events: list[dict[str, Any]] = field(default_factory=list)
     step_results: list[StructuredStepResult] = field(default_factory=list)
     approval_requests: list[dict[str, Any]] = field(default_factory=list)
+    task_status: str = "completed"
+    completed_steps: list[str] = field(default_factory=list)
+    remaining_steps: list[str] = field(default_factory=list)
+    final_goal_verified: bool = False
+    verification_evidence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -231,4 +248,9 @@ class PipelineRunResult:
             "pipeline_events": list(self.pipeline_events),
             "step_results": [result.to_dict() for result in self.step_results],
             "approval_requests": list(self.approval_requests),
+            "task_status": self.task_status,
+            "completed_steps": list(self.completed_steps),
+            "remaining_steps": list(self.remaining_steps),
+            "final_goal_verified": self.final_goal_verified,
+            "verification_evidence": list(self.verification_evidence),
         }

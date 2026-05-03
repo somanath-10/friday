@@ -12,8 +12,12 @@ from typing import Any
 
 class EventType(str, Enum):
     COMMAND_RECEIVED = "command_received"
+    CONTEXT_RESOLVED = "context_resolved"
     INTENT_DETECTED = "intent_detected"
     PLAN_CREATED = "plan_created"
+    STEP_STARTED = "step_started"
+    OBSERVATION_STARTED = "observation_started"
+    OBSERVATION_COMPLETED = "observation_completed"
     BROWSER_OBSERVED = "browser_observed"
     DESKTOP_OBSERVED = "desktop_observed"
     ELEMENT_MAP_CREATED = "element_map_created"
@@ -34,9 +38,13 @@ class EventType(str, Enum):
     RECOVERY_FAILED = "recovery_failed"
     WORKFLOW_SAVED = "workflow_saved"
     WORKFLOW_COMPLETED = "workflow_completed"
+    ARTIFACT_CREATED = "artifact_created"
     EMERGENCY_STOP_TRIGGERED = "emergency_stop_triggered"
     TASK_COMPLETED = "task_completed"
+    TASK_PARTIAL = "task_partial"
     TASK_BLOCKED = "task_blocked"
+    TASK_FAILED = "task_failed"
+    TASK_CANCELLED = "task_cancelled"
 
 
 @dataclass(frozen=True)

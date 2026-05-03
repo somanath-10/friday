@@ -12,7 +12,15 @@ from friday.core.events import EventLog, EventType
 from friday.core.operator_loop import OperatorLoop, OperatorLoopConfig, OperatorLoopResult
 from friday.core.permissions import permission_for_assessment
 from friday.core.risk import RiskAssessment, classify_browser_action
-from friday.core.ui import UIElement, UIObservation, find_target_element, is_sensitive_text, normalize_text
+from friday.core.ui import (
+    HIGH_CONFIDENCE_THRESHOLD,
+    MEDIUM_CONFIDENCE_THRESHOLD,
+    UIElement,
+    UIObservation,
+    find_target_element,
+    is_sensitive_text,
+    normalize_text,
+)
 from friday.safety.audit_log import append_audit_record
 
 
@@ -57,6 +65,7 @@ def infer_site_url(goal: str) -> str:
 def extract_search_query(goal: str) -> str:
     text = goal.strip()
     patterns = (
+        r"\bsearch\s+(?:youtube|google|wikipedia|github|amazon)\s+for\s+(.+?)(?:\s+and\s+(?:open|click|play|summarize|save)\b|$)",
         r"\bsearch(?: for)?\s+(.+?)(?:\s+and\s+(?:open|click|play|summarize|save)\b|$)",
         r"\blook up\s+(.+?)(?:\s+and\s+|$)",
     )
@@ -65,8 +74,112 @@ def extract_search_query(goal: str) -> str:
         if match:
             query = match.group(1).strip(" .,:;")
             query = re.sub(r"\bon\s+(youtube|google|wikipedia|github|amazon)\b", "", query, flags=re.IGNORECASE).strip()
+            query = re.sub(r"^(youtube|google|wikipedia|github|amazon)\s+for\s+", "", query, flags=re.IGNORECASE).strip()
             return query
     return ""
+
+
+def wants_first_result_click(goal: str) -> bool:
+    lowered = normalize_text(goal)
+    first_target = any(
+        phrase in lowered
+        for phrase in (
+            "first video",
+            "first result",
+            "first one",
+            "1st video",
+            "1st result",
+        )
+    )
+    click_target = any(word in lowered for word in ("open", "click", "play", "select"))
+    only_video = ("only click" in lowered or "u only click" in lowered or "you only click" in lowered) and "video" in lowered
+    return (first_target and click_target) or only_video
+
+
+def _has_action(history: list[dict[str, Any]], action_type: str) -> bool:
+    return any(action.get("type") == action_type for action in history)
+
+
+def _first_relevant_result(observation: UIObservation, *, target_type: str = "result") -> tuple[UIElement, float] | None:
+    target_type = normalize_text(target_type)
+    candidates = [element for element in observation.elements if element.visible and element.enabled]
+    if not candidates:
+        return None
+
+    def score(element: UIElement) -> tuple[int, int]:
+        haystack = element.searchable_text()
+        role = normalize_text(element.role)
+        index = int(element.metadata.get("index", 9999) or 9999)
+        value = 0
+        if role in {"link", "a", "card", "article", "video"}:
+            value += 20
+        if element.href:
+            value += 15
+        if target_type == "video":
+            if "/watch" in haystack or "watch?v=" in haystack:
+                value += 80
+            if any(marker in haystack for marker in ("video", "views", "duration", "play", "youtu")):
+                value += 25
+            if any(marker in haystack for marker in ("shorts", "playlist", "channel", "ad", "sponsored")):
+                value -= 25
+        else:
+            if role in {"link", "a", "card", "article"}:
+                value += 35
+            if any(marker in haystack for marker in ("ad", "sponsored")):
+                value -= 20
+        return value, -index
+
+    ranked = sorted(candidates, key=score, reverse=True)
+    best = ranked[0]
+    raw_score = score(best)[0]
+    if raw_score <= 0:
+        return None
+    confidence = min(0.95, max(0.45, raw_score / 100.0))
+    return best, confidence
+
+
+def _low_confidence_action(goal: str, confidence: float, *, target: str = "target") -> BrowserAction:
+    return BrowserAction(
+        "needs_clarification",
+        reason=(
+            f"I found a possible browser {target}, but confidence was {confidence:.2f}. "
+            "Please clarify the target before I click."
+        ),
+        metadata={"confidence": confidence, "goal": goal, "target": target},
+    )
+
+
+def _extract_named_target(goal: str) -> str:
+    patterns = (
+        r"\b(?:click|open|select)\s+(?:the\s+)?(?:named\s+)?(?:result|link|button)\s+(.+)$",
+        r"\b(?:click|open|select)\s+(.+?)\s+(?:result|link|button)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, goal, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip(" .,:;\"'")
+    quoted = re.search(r"['\"]([^'\"]+)['\"]", goal)
+    return quoted.group(1).strip() if quoted else ""
+
+
+def _extract_fill_text(goal: str) -> str:
+    patterns = (
+        r"\b(?:type|enter|fill)\s+['\"]([^'\"]+)['\"]",
+        r"\b(?:type|enter|fill)\s+(.+?)(?:\s+into|\s+in\s+the|\s+in\s+|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, goal, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip(" .,:;")
+    return ""
+
+
+def _extract_fill_target(goal: str) -> str:
+    match = re.search(r"\b(?:into|in the|in)\s+([a-zA-Z0-9 _-]+)$", goal, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    target = match.group(1).strip(" .,:;")
+    return "" if target.lower() in {"field", "input", "box"} else target
 
 
 def build_element_map_from_dom(snapshot: DomSnapshot) -> UIObservation:
@@ -79,6 +192,8 @@ def build_element_map_from_dom(snapshot: DomSnapshot) -> UIObservation:
             "tag": item.tag,
             "input_type": item.input_type,
             "name": item.name,
+            "locator_strategy": f"indexed:{index}",
+            "confidence": 1.0,
         }
         elements.append(
             UIElement(
@@ -145,7 +260,13 @@ def build_element_map_from_records(
                 bounding_box={key: value for key, value in bbox.items() if value is not None},
                 enabled=not bool(item.get("disabled")),
                 sensitive=is_sensitive_text(label, str(item.get("type", "")), str(item.get("href", ""))),
-                metadata={"index": int(item.get("index", index)), "tag": item.get("tag", ""), "type": item.get("type", "")},
+                metadata={
+                    "index": int(item.get("index", index)),
+                    "tag": item.get("tag", ""),
+                    "type": item.get("type", ""),
+                    "locator_strategy": str(item.get("selector") or f"indexed:{item.get('index', index)}"),
+                    "confidence": float(item.get("confidence", 1.0) or 1.0),
+                },
             )
         )
     return UIObservation("browser", title=title, url=url, visible_text=visible_text, elements=elements, metadata={"element_count": len(elements)})
@@ -180,9 +301,9 @@ def _goal_completed(goal: str, observation: UIObservation, actions: list[dict[st
     lowered = normalize_text(goal)
     if "summarize" in lowered and observation.visible_text:
         return True
-    if any(action.get("type") == "click_element" and ("first video" in lowered or "play" in lowered) for action in actions):
+    if wants_first_result_click(goal) and _has_action(actions, "click_element"):
         return True
-    if any(action.get("type") == "type_into_element" for action in actions) and "search" in lowered:
+    if any(action.get("type") == "type_into_element" for action in actions) and "search" in lowered and not wants_first_result_click(goal):
         return True
     return False
 
@@ -221,21 +342,69 @@ class BrowserOperator:
         if query and not any(action.get("type") == "type_into_element" for action in history):
             match = self.find_element_by_goal("search input", observation, {"preferred_roles": {"searchbox", "textbox", "input"}})
             if match:
+                if match.confidence < MEDIUM_CONFIDENCE_THRESHOLD:
+                    return _low_confidence_action(goal, match.confidence, target="search field")
                 return BrowserAction("type_into_element", element_id=match.element.element_id, text=query, key="Enter", reason="Fill the best search field.", metadata={"confidence": match.confidence})
 
-        if "first video" in lowered or "play" in lowered:
-            match = self.find_element_by_goal("first video", observation, {"preferred_roles": {"link", "video", "card"}})
+        fill_text = _extract_fill_text(goal)
+        if fill_text and not any(action.get("type") == "type_into_element" for action in history):
+            fill_target = _extract_fill_target(goal)
+            target_goal = f"{fill_target} input" if fill_target else "editable input"
+            match = self.find_element_by_goal(target_goal, observation, {"preferred_roles": {"searchbox", "textbox", "textarea", "input"}})
             if match:
-                return BrowserAction("click_element", element_id=match.element.element_id, reason="Open the best matching video target.", metadata={"confidence": match.confidence})
+                if match.confidence < MEDIUM_CONFIDENCE_THRESHOLD and not match.element.focused:
+                    return _low_confidence_action(goal, match.confidence, target="editable field")
+                return BrowserAction("type_into_element", element_id=match.element.element_id, text=fill_text, reason="Type into the best matching input.", metadata={"confidence": match.confidence})
+
+        if "submit" in lowered or "send form" in lowered:
+            match = self.find_element_by_goal("submit button", observation, {"preferred_roles": {"button"}})
+            if match:
+                confidence = match.confidence
+                if "submit" in match.element.searchable_text() and "button" in normalize_text(match.element.role):
+                    confidence = max(confidence, 0.82)
+                if confidence < HIGH_CONFIDENCE_THRESHOLD:
+                    return _low_confidence_action(goal, confidence, target="submit control")
+                return BrowserAction("submit_form", element_id=match.element.element_id, reason="Submit the best matching form control.", metadata={"confidence": confidence})
+
+        if wants_first_result_click(goal):
+            target_type = "video" if "video" in lowered or "youtube" in lowered or "play" in lowered else "result"
+            first_match = _first_relevant_result(observation, target_type=target_type)
+            if first_match:
+                element, confidence = first_match
+                if confidence < MEDIUM_CONFIDENCE_THRESHOLD:
+                    return _low_confidence_action(goal, confidence, target=target_type)
+                return BrowserAction(
+                    "click_element",
+                    element_id=element.element_id,
+                    reason=f"Open the first visible {target_type} target.",
+                    metadata={"target_type": target_type, "index": element.metadata.get("index"), "confidence": confidence},
+                )
+            match = self.find_element_by_goal("first video" if target_type == "video" else "first result", observation, {"preferred_roles": {"link", "video", "card", "article"}})
+            if match:
+                if match.confidence < MEDIUM_CONFIDENCE_THRESHOLD:
+                    return _low_confidence_action(goal, match.confidence, target=target_type)
+                return BrowserAction("click_element", element_id=match.element.element_id, reason=f"Open the best matching {target_type} target.", metadata={"confidence": match.confidence, "target_type": target_type})
+
+        named_target = _extract_named_target(goal)
+        if named_target:
+            match = self.find_element_by_goal(named_target, observation, {"preferred_roles": {"link", "button", "card", "article"}})
+            if match:
+                if match.confidence < HIGH_CONFIDENCE_THRESHOLD:
+                    return _low_confidence_action(goal, match.confidence, target=named_target)
+                return BrowserAction("click_element", element_id=match.element.element_id, reason="Open the named browser target.", metadata={"confidence": match.confidence, "target": named_target})
 
         if "draft" in lowered or "email" in lowered:
             match = self.find_element_by_goal("compose draft email", observation)
             if match:
+                if match.confidence < HIGH_CONFIDENCE_THRESHOLD:
+                    return _low_confidence_action(goal, match.confidence, target="drafting control")
                 return BrowserAction("click_element", element_id=match.element.element_id, reason="Open the best drafting control.", metadata={"confidence": match.confidence})
 
         match = self.find_element_by_goal(goal, observation)
-        if match and match.confidence >= 0.25:
+        if match and match.confidence >= HIGH_CONFIDENCE_THRESHOLD:
             return BrowserAction("click_element", element_id=match.element.element_id, reason="Use highest-confidence browser target.", metadata={"confidence": match.confidence})
+        if match and match.confidence >= MEDIUM_CONFIDENCE_THRESHOLD:
+            return _low_confidence_action(goal, match.confidence, target=match.element.label or match.element.role)
 
         return BrowserAction("screenshot_fallback", reason="No confident DOM/accessibility target found.")
 

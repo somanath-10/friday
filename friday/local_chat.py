@@ -24,6 +24,7 @@ from mcp.client.sse import sse_client
 
 from friday.config import local_browser_setup_issues
 from friday.core.executor import resume_approved_structured_command, run_structured_command
+from friday.core.task_context import contextualize_user_message, remember_browser_shortcut
 from friday.safety.approval_gate import list_pending_approvals, resolve_pending_approval
 from friday.tools.memory import record_conversation_turn, store_action_trace
 
@@ -104,6 +105,9 @@ DESKTOP_TOOL_NAMES = {
     "open_application",
     "search_local_apps",
     "take_screenshot",
+    "start_screen_recording",
+    "stop_screen_recording",
+    "analyze_screen_recording",
     "type_text",
     "press_key",
 }
@@ -183,6 +187,9 @@ class LocalChatResult:
 class BrowserOpenShortcut:
     url: str
     reply: str
+    site: str = ""
+    search_query: str = ""
+    unfinished_goal: str = ""
 
 
 @dataclass(frozen=True)
@@ -441,6 +448,21 @@ def _direct_browser_open_shortcut(latest_user_message: str) -> BrowserOpenShortc
         return None
 
     if any(
+        phrase in lowered
+        for phrase in (
+            "first video",
+            "first result",
+            "first one",
+            "1st video",
+            "1st result",
+            "and open",
+            "and click",
+            "only click",
+        )
+    ):
+        return None
+
+    if any(
         marker in lowered
         for marker in (
             " folder",
@@ -498,6 +520,9 @@ def _direct_browser_open_shortcut(latest_user_message: str) -> BrowserOpenShortc
     return BrowserOpenShortcut(
         url=url,
         reply=f"Opened YouTube results for '{query}' in your browser.",
+        site="youtube",
+        search_query=query,
+        unfinished_goal="open first video",
     )
 
 
@@ -947,9 +972,12 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
     if not local_mode_ready():
         raise RuntimeError("; ".join(local_mode_issues()))
 
+    effective_user_message = contextualize_user_message(latest_user_message)
     openai_messages: list[dict[str, Any]] = [{"role": "system", "content": _browser_system_prompt()}]
     openai_messages.extend(history)
-    browser_opening_hint = _real_browser_opening_hint(latest_user_message)
+    if effective_user_message != latest_user_message:
+        openai_messages.append({"role": "system", "content": f"Contextualized latest request: {effective_user_message}"})
+    browser_opening_hint = _real_browser_opening_hint(effective_user_message)
     if browser_opening_hint:
         openai_messages.append({"role": "system", "content": browser_opening_hint})
     tool_events: list[dict[str, Any]] = []
@@ -958,7 +986,7 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
         read_stream, write_stream = streams
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
-            direct_browser_open = _direct_browser_open_shortcut(latest_user_message)
+            direct_browser_open = _direct_browser_open_shortcut(effective_user_message)
             if direct_browser_open is not None:
                 result = await session.call_tool("open_url", {"url": direct_browser_open.url})
                 rendered_result = _render_tool_result(result)
@@ -971,6 +999,13 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
                     }
                 )
                 if not tool_failed:
+                    remember_browser_shortcut(
+                        url=direct_browser_open.url,
+                        site=direct_browser_open.site,
+                        search_query=direct_browser_open.search_query,
+                        unfinished_goal=direct_browser_open.unfinished_goal,
+                        visible_page_state=rendered_result,
+                    )
                     try:
                         await record_conversation_turn(
                             user_message=latest_user_message,
@@ -999,13 +1034,15 @@ async def run_local_chat(messages: list[dict[str, Any]], mcp_url: str) -> LocalC
                 )
             if _structured_pipeline_enabled() and latest_user_message:
                 structured_result = await run_structured_command(
-                    latest_user_message,
+                    effective_user_message,
                     lambda tool_name, params: _invoke_rendered_tool(session, tool_name, params),
                 )
                 if structured_result.handled:
                     tool_events.extend(structured_result.tool_events)
-                    status = "completed" if structured_result.success else (
-                        "approval_required" if structured_result.permission_pending else "failed"
+                    status = structured_result.task_status or (
+                        "completed" if structured_result.success else (
+                            "approval_required" if structured_result.permission_pending else "failed"
+                        )
                     )
                     try:
                         await record_conversation_turn(
@@ -1132,8 +1169,10 @@ async def resume_approved_local_action(approval_id: str, mcp_url: str) -> LocalC
                 approval_id,
                 lambda tool_name, params: _invoke_rendered_tool(session, tool_name, params),
             )
-            status = "completed" if structured_result.success else (
-                "approval_required" if structured_result.permission_pending else "failed"
+            status = structured_result.task_status or (
+                "completed" if structured_result.success else (
+                    "approval_required" if structured_result.permission_pending else "failed"
+                )
             )
             try:
                 await record_conversation_turn(

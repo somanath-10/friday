@@ -75,15 +75,20 @@ class OperatorLoop:
         steps: list[OperatorLoopStep] = []
         for index in range(1, self.config.max_steps + 1):
             if is_emergency_stopped():
-                self.event_log.emit(EventType.TASK_BLOCKED, "Emergency stop is active.", step=index)
-                return OperatorLoopResult(False, "blocked", "Emergency stop is active.", steps, self.event_log.to_list())
+                self.event_log.emit(EventType.EMERGENCY_STOP_TRIGGERED, "Emergency stop is active.", step=index)
+                return OperatorLoopResult(False, "emergency_stopped", "Emergency stop is active.", steps, self.event_log.to_list())
 
+            self.event_log.emit(EventType.STEP_STARTED, "Operator step started.", step=index)
             observation = observe()
             self.event_log.emit(EventType.ELEMENT_MAP_CREATED, "Observation map created.", step=index, observation=observation)
             action = decide(observation, steps)
             if not action or action.get("type") in {"complete", "done"}:
                 self.event_log.emit(EventType.TASK_COMPLETED, action.get("message", "Goal completed."), step=index)
                 return OperatorLoopResult(True, "completed", action.get("message", "Goal completed."), steps, self.event_log.to_list())
+            if action.get("type") in {"needs_clarification", "confirm_target"}:
+                message = action.get("reason") or "Target is ambiguous; user clarification is required."
+                self.event_log.emit(EventType.TASK_BLOCKED, message, step=index, action=action)
+                return OperatorLoopResult(False, "needs_clarification", message, steps, self.event_log.to_list())
 
             self.event_log.emit(EventType.TARGET_SELECTED, "Next target selected.", step=index, action=action)
             decision = permission(action)
